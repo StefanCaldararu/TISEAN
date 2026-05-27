@@ -9,6 +9,8 @@ CFLAGS = @CFLAGS@
 AR = @AR@
 ARFLAGS = @ARFLAGS@
 INSTALL = @INSTALL@
+srcdir = @srcdir@
+VPATH = @srcdir@
 
 LOADLIBS = routines/libddtsa.a -lm
 
@@ -25,8 +27,8 @@ all: $(ALL)
 routines/libddtsa.a:
 	(cd routines && $(MAKE))
 
-$(ALL): routines/libddtsa.a *.c
-	-$(CC) $(CFLAGS) $(COPTS) -o $@ $@.c $(LOADLIBS)
+$(ALL): routines/libddtsa.a $(wildcard *.c)
+	-$(CC) $(CFLAGS) $(COPTS) -o $@ $(srcdir)/$@.c $(LOADLIBS)
 
 install: all
 	-for bin in $(ALL); do $(INSTALL) $$bin $(BINDIR); done
