@@ -3,6 +3,8 @@ SHELL = /bin/sh
 prefix = @prefix@
 exec_prefix = @exec_prefix@
 BINDIR = ${exec_prefix}/@bindir@
+srcdir = @srcdir@
+VPATH = @srcdir@
 
 FC = @FC@
 FFLAGS = @FFLAGS@

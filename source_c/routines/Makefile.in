@@ -5,6 +5,8 @@ ARFLAGS = @ARFLAGS@
 CC = @CC@
 CFLAGS = @CFLAGS@
 RANLIB = @RANLIB@
+srcdir = @srcdir@
+VPATH = @srcdir@
 
 ALL = get_series.o rescale_data.o make_box.o\
 	find_neighbors.o scan_help.o variance.o get_multi_series.o\
