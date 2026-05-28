@@ -1,1 +1,6 @@
+Makefile
 build
+bin
+*.a
+*.o
+*.f
