@@ -2,13 +2,15 @@ SHELL = /bin/sh
 
 prefix = @prefix@
 exec_prefix = @exec_prefix@
-BINDIR = ${exec_prefix}/@bindir@
+BIN_DIR = $(CURDIR)/bin
+export BIN_DIR
 CC = @CC@
 FC = @FC@
 HAVE_NR = @HAVE_NR@
 srcdir = @srcdir@
 
 all:
+	@mkdir -p $(BIN_DIR)
 	@head -20 $(srcdir)/README
 	-if test -n "${FC}"; then (cd source_f && $(MAKE) $@); fi
 	-if test -n "${CC}"; then (cd source_c && $(MAKE) $@); fi

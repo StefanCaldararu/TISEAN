@@ -27,8 +27,8 @@ all: $(ALL)
 routines/libddtsa.a:
 	(cd routines && $(MAKE))
 
-$(ALL): routines/libddtsa.a $(wildcard *.c)
-	-$(CC) $(CFLAGS) $(COPTS) -o $@ $(srcdir)/$@.c $(LOADLIBS)
+$(ALL): routines/libddtsa.a
+	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $(srcdir)/$@.c routines/libddtsa.a -lm
 
 install: all
 	-for bin in $(ALL); do $(INSTALL) $$bin $(BINDIR); done
