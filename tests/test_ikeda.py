@@ -2,9 +2,9 @@ import subprocess
 import numpy as np
 
 
-def run_henon():
+def run_ikeda():
     result = subprocess.run(
-        ["./bin/henon", "-l", "1000"],
+        ["./bin/ikeda", "-l", "1000"],
         capture_output=True,
         text=True,
         check=True
@@ -27,10 +27,10 @@ def parse_output(text):
     return np.array(data)
 
 
-def test_henon_regression():
-    out = run_henon()
+def test_ikeda_regression():
+    out = run_ikeda()
     data = parse_output(out)
 
-    ref = np.loadtxt("tests/refs/henon_l1000.txt")
+    ref = np.loadtxt("tests/refs/ikeda_l1000.txt")
 
     np.testing.assert_allclose(data, ref, rtol=1e-7, atol=1e-7)
