@@ -24,7 +24,7 @@ ERRUNIT = @ERRUNIT@
           choose rms notch autocor spectrum wiener1 wiener2 \
 	  surrogates endtoend timerev \
           events intervals spikespec spikeauto \
-          henon ikeda lorenz ar-run xrecur 
+          henon ikeda lorenz xrecur 
 
 # list of objects to be put in libtsa.a 
    INC  = readfile.o xreadfile.o \
