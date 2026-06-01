@@ -5,3 +5,7 @@ bin
 *.a
 *.o
 *.f
+*.cache
+*.log
+*.status
+*.txt
