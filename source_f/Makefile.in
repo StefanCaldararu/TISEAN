@@ -38,9 +38,9 @@ istdio.o: istdio_temp.f
 	sed "s#ERRUNIT#${ERRUNIT}#" istdio_temp.f > istdio.f
 	$(FC) $(FFLAGS) -c istdio.f -o istdio.o
 
-$(BINS): libtsa.a libsla.a *.f
-	-$(FC) $(FFLAGS) -o $@ $@.f $(LOADLIBES) $(LDFLAGS)
-
+$(BINS): libtsa.a libsla.a
+	$(FC) $(FFLAGS) -o $(BIN_DIR)/$@ $@.f $(LOADLIBES) $(LDFLAGS)
+	
 libtsa.a: $(INC)
 	$(AR) $(ARFLAGS) libtsa.a $?
 	$(RANLIB) libtsa.a
