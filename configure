@@ -581,7 +581,7 @@ if test -n "$CC" && test -z "$CFLAGS"; then
    for cflags in -O3 -O2 -O +O3 +O -xO3; do
       echo $ac_n "checking whether $CC accepts $cflags""... $ac_c" 1>&6
 echo "configure:584: checking whether $CC accepts $cflags" >&5
-      if test -z "`$CC $cflags -c conftest.c 2>&1`"; then
+      if $CC $cflags -c conftest.c >/dev/null 2>&1; then
          echo "$ac_t""yes" 1>&6
 	 CFLAGS=$cflags
          break
