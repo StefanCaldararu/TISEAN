@@ -48,8 +48,6 @@
    length. */
 
 #include <math.h>
-#include "ogg.h"
-#include "fft.h"
 
 static void drfti1(int n, float *wa, int *ifac){
   static int ntryh[4] = { 4,2,3,5 };
@@ -142,7 +140,7 @@ void __ogg_fdcosqi(int n, float *wsave, int *ifac){
   __ogg_fdrffti(n, wsave+n,ifac);
 }
 
-STIN void dradf2(int ido,int l1,float *cc,float *ch,float *wa1){
+static void dradf2(int ido,int l1,float *cc,float *ch,float *wa1){
   int i,k;
   float ti2,tr2;
   int t0,t1,t2,t3,t4,t5,t6;
@@ -197,7 +195,7 @@ STIN void dradf2(int ido,int l1,float *cc,float *ch,float *wa1){
   }
 }
 
-STIN void dradf4(int ido,int l1,float *cc,float *ch,float *wa1,
+static void dradf4(int ido,int l1,float *cc,float *ch,float *wa1,
 	    float *wa2,float *wa3){
   static float hsqt2 = .70710678118654752440084436210485;
   int i,k,t0,t1,t2,t3,t4,t5,t6;
@@ -294,7 +292,7 @@ STIN void dradf4(int ido,int l1,float *cc,float *ch,float *wa1,
   }
 }
 
-STIN void dradfg(int ido,int ip,int l1,int idl1,float *cc,float *c1,
+static void dradfg(int ido,int ip,int l1,int idl1,float *cc,float *c1,
 			  float *c2,float *ch,float *ch2,float *wa){
 
   static float tpi=6.28318530717958647692528676655900577;
@@ -596,7 +594,7 @@ L119:
   }
 }
 
-STIN void drftf1(int n,float *c,float *ch,float *wa,int *ifac){
+static void drftf1(int n,float *c,float *ch,float *wa,int *ifac){
   int i,k1,l1,l2;
   int na,kh,nf;
   int ip,iw,ido,idl1,ix2,ix3;
@@ -662,7 +660,7 @@ void __ogg_fdrfftf(int n,float *r,float *wsave,int *ifac){
   drftf1(n,r,wsave,wsave+n,ifac);
 }
 
-STIN void dcsqf1(int n,float *x,float *w,float *xh,int *ifac){
+static void dcsqf1(int n,float *x,float *w,float *xh,int *ifac){
   int modn,i,k,kc;
   int np2,ns2;
   float xim1;
@@ -715,7 +713,7 @@ void __ogg_fdcosqf(int n,float *x,float *wsave,int *ifac){
   }
 }
 
-STIN void dradb2(int ido,int l1,float *cc,float *ch,float *wa1){
+static void dradb2(int ido,int l1,float *cc,float *ch,float *wa1){
   int i,k,t0,t1,t2,t3,t4,t5,t6;
   float ti2,tr2;
 
@@ -767,7 +765,7 @@ L105:
   }
 }
 
-STIN void dradb3(int ido,int l1,float *cc,float *ch,float *wa1,
+static void dradb3(int ido,int l1,float *cc,float *ch,float *wa1,
 			  float *wa2){
   static float taur = -.5;
   static float taui = .86602540378443864676372317075293618;
@@ -830,7 +828,7 @@ STIN void dradb3(int ido,int l1,float *cc,float *ch,float *wa1,
   }
 }
 
-STIN void dradb4(int ido,int l1,float *cc,float *ch,float *wa1,
+static void dradb4(int ido,int l1,float *cc,float *ch,float *wa1,
 			  float *wa2,float *wa3){
   static float sqrt2=1.4142135623730950488016887242097;
   int i,k,t0,t1,t2,t3,t4,t5,t6,t7,t8;
@@ -921,7 +919,7 @@ STIN void dradb4(int ido,int l1,float *cc,float *ch,float *wa1,
   }
 }
 
-STIN void dradbg(int ido,int ip,int l1,int idl1,float *cc,float *c1,
+static void dradbg(int ido,int ip,int l1,int idl1,float *cc,float *c1,
 	    float *c2,float *ch,float *ch2,float *wa){
   static float tpi=6.28318530717958647692528676655900577;
   int idij,ipph,i,j,k,l,ik,is,t0,t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,
@@ -1235,7 +1233,7 @@ L132:
   }
 }
 
-STIN void drftb1(int n, float *c, float *ch, float *wa, int *ifac){
+static void drftb1(int n, float *c, float *ch, float *wa, int *ifac){
   int i,k1,l1,l2;
   int na;
   int nf,ip,iw,ix2,ix3,ido,idl1;
@@ -1318,7 +1316,7 @@ void __ogg_fdrfftb(int n, float *r, float *wsave, int *ifac){
   drftb1(n, r, wsave, wsave+n, ifac);
 }
 
-STIN void dcsqb1(int n,float *x,float *w,float *xh,int *ifac){
+static void dcsqb1(int n,float *x,float *w,float *xh,int *ifac){
   int modn,i,k,kc;
   int np2,ns2;
   float xim1;
