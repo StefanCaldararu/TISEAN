@@ -51,11 +51,7 @@ libsla.a: slatec/*.f
 ../source_c/routines/libddtsa.a:
 	(cd ../source_c/routines && $(MAKE))
 
-<<<<<<< HEAD
 Randomize: libtsa.a ../source_c/routines/libddtsa.a libsla.a
-=======
-Randomize: libtsa.a libsla.a
->>>>>>> 5768ad8 (:truck: implement store_spec in c. Include libddtsa.a in fortran build to still get this routine. Tested against pytest for wiener1 - passed with small numerical differences. Will need to add more tests for other cases for wiener1)
 	-(cd randomize && $(MAKE))
 
 clean:
