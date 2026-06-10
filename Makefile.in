@@ -52,6 +52,7 @@ clean:
 	-(cd source_f && $(MAKE) $@)
 	-(cd source_c && $(MAKE) $@)
 	-@rm -f install.log missing.log config.*
+	-@rm -f $(BIN_DIR)/*
 	-find . \( -name "*~" -o -name "#*#" -o -name "*.o" \
 	        -o -name "lib*.a" \) -exec rm -f {} \;
 
