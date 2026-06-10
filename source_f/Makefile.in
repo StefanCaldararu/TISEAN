@@ -13,7 +13,7 @@ AR = @AR@
 ARFLAGS = @ARFLAGS@
 RANLIB = @RANLIB@
 INSTALL = @INSTALL@
-LOADLIBES = libtsa.a libsla.a
+LOADLIBES = libtsa.a ../source_c/routines/libddtsa.a libsla.a
 ERRUNIT = @ERRUNIT@
 
 # list of executables we want to produce
@@ -30,7 +30,7 @@ ERRUNIT = @ERRUNIT@
    INC  = readfile.o xreadfile.o \
           arguments.o commandline.o any_s.o istdio.o help.o verbose.o \
           d1.o neigh.o normal.o rank.o \
-          nmore.o store_spec.o tospec.o
+          nmore.o tospec.o
 
 all: $(BINS) Randomize
 
@@ -38,7 +38,7 @@ istdio.o: istdio_temp.f
 	sed "s#ERRUNIT#${ERRUNIT}#" istdio_temp.f > istdio.f
 	$(FC) $(FFLAGS) -c istdio.f -o istdio.o
 
-$(BINS): libtsa.a libsla.a
+$(BINS): libtsa.a ../source_c/routines/libddtsa.a libsla.a
 	$(FC) $(FFLAGS) -o $(BIN_DIR)/$@ $@.f $(LOADLIBES) $(LDFLAGS)
 	
 libtsa.a: $(INC)
@@ -47,6 +47,9 @@ libtsa.a: $(INC)
 
 libsla.a: slatec/*.f
 	(cd slatec && $(MAKE))
+
+../source_c/routines/libddtsa.a:
+	(cd ../source_c/routines && $(MAKE))
 
 Randomize: libtsa.a libsla.a
 	-(cd randomize && $(MAKE))
