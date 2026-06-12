@@ -14,7 +14,7 @@ ALL = get_series.o rescale_data.o make_box.o\
 	test_outfile.o invert_matrix.o exclude_interval.o make_multi_box.o\
 	find_multi_neighbors.o check_alloc.o myfgets.o what_i_do.o\
 	make_multi_index.o make_multi_box2.o rand_arb_dist.o fft.o\
-	store_spec.o
+	store_spec.o normal.o
 
 libddtsa.a: $(ALL)
 	$(AR) $(ARFLAGS) libddtsa.a $?
