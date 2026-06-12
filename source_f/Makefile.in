@@ -29,7 +29,7 @@ ERRUNIT = @ERRUNIT@
 # list of objects to be put in libtsa.a 
    INC  = readfile.o xreadfile.o \
           arguments.o commandline.o any_s.o istdio.o help.o verbose.o \
-          d1.o neigh.o normal.o rank.o \
+          d1.o neigh.o rank.o \
           nmore.o tospec.o
 
 all: $(BINS) Randomize
@@ -51,7 +51,7 @@ libsla.a: slatec/*.f
 ../source_c/routines/libddtsa.a:
 	(cd ../source_c/routines && $(MAKE))
 
-Randomize: libtsa.a libsla.a
+Randomize: libtsa.a ../source_c/routines/libddtsa.a libsla.a
 	-(cd randomize && $(MAKE))
 
 clean:

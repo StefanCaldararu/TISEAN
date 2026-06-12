@@ -9,7 +9,7 @@ FFLAGS = @FFLAGS@
 INSTALL = @INSTALL@
 LDFLAGS = @LDFLAGS@
 
-LOADLIBES = ../libtsa.a ../libsla.a
+LOADLIBES = ../libtsa.a ../../source_c/routines/libddtsa.a ../libsla.a
 
 SRC = randomize.f cost/$(COST).o cool/$(COOL).o perm/$(PERM).o
 TRG = randomize_$(COST)_$(COOL)_$(PERM)
@@ -23,6 +23,9 @@ all install clean missing uninstall:
 # add more similar lines for each module you have written
 # for example if you created cost/mycost.f
 #	-$(MAKE) COST=mycost  COOL=exp PERM=random $@-one
+
+../../source_c/routines/libddtsa.a:
+	(cd ../source_c/routines && $(MAKE))
 
 install-one: $(TRG)
 	-$(INSTALL) $(TRG) $(BINDIR)
