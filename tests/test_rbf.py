@@ -2,9 +2,9 @@ import subprocess
 import numpy as np
 
 
-def run_ar():
+def run_rbf():
     result = subprocess.run(
-        ["./bin/ar-run", "-l", "1000", "./tests/refs/ar-run_seed.txt"],
+        ["./bin/rbf", "-m2", "-d1", "-p10", "-n300", "-L50", "./tests/refs/ar-run_l1000.txt"],
         capture_output=True,
         text=True,
         check=True
@@ -17,7 +17,7 @@ def parse_output(text):
     for line in text.splitlines():
         parts = line.strip().split()
 
-        # keep only numeric rows (skip headers)
+        # keep only numeric rows (skip "#..." headers)
         if len(parts) == 1:
             try:
                 data.append(float(parts[0]))
@@ -27,10 +27,10 @@ def parse_output(text):
     return np.array(data)
 
 
-def test_ar_regression():
-    out = run_ar()
+def test_rbf_regression():
+    out = run_rbf()
     data = parse_output(out)
 
-    ref = np.loadtxt("tests/refs/ar-run_l1000.txt")
+    ref = np.loadtxt("tests/refs/rbf_m2d1p10n300L50.txt")
 
     np.testing.assert_allclose(data, ref, rtol=1e-7, atol=1e-7)

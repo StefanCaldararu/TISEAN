@@ -1,0 +1,9 @@
+
+ period / accuracy / stability
+           1   2.38418579E-07   2.29789972    
+           1  0.658545494    
+
+ period / accuracy / stability
+           2   1.07453801E-07   3.46402311    
+           1  0.979982197    
+           2 -0.499055892    
