@@ -22,6 +22,9 @@ add_library(ddtsa STATIC
   make_multi_index.c
   make_multi_box2.c
   rand_arb_dist.c
+  normal.c
+  store_spec.c
+  fft.c
 )
 
 target_link_libraries(ddtsa PUBLIC m)

@@ -57,7 +57,7 @@ void store_spec_(int *nmax, float *x, int *iback)
             x[i] *= N;
 
         for(int k = 2; k <= n2; k++)
-            x[2*k - 1] = 0.0f;
+            x[2*k - 2] = 0.0f;
 
         __ogg_fdrfftb(N, x, wsave, ifac);
     }

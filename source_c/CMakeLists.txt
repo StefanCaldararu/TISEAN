@@ -6,7 +6,7 @@ set(TISEAN_C_PROGRAMS
   lzo-test lfo-run lfo-test rbf polynom polyback polynomp polypar
   ar-model mem_spec pca ghkss lfo-ar xzero xcor boxcount fsle
   resample histogram nstat_z sav_gol delay lzo-gm arima-model
-  lzo-run
+  lzo-run ar-run
 )
 
 foreach(prog ${TISEAN_C_PROGRAMS})
