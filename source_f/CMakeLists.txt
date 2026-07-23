@@ -42,12 +42,16 @@ add_library(tsa STATIC
   verbose.f
   d1.f
   neigh.f
-  normal.f
   rank.f
   nmore.f
-  store_spec.f
   tospec.f
 )
+
+# normal.f and store_spec.f have been ported to C (source_c/routines/normal.c,
+# store_spec.c); the Fortran routines still call them as `normal`/`rms`/
+# `minmax`/`store_spec`, so link the C library that now provides those
+# symbols into every Fortran binary.
+target_link_libraries(tsa PUBLIC ddtsa)
 
 set(TISEAN_F_PROGRAMS
   c1 c2naive xc2
@@ -57,7 +61,7 @@ set(TISEAN_F_PROGRAMS
   choose rms notch autocor spectrum wiener1 wiener2
   surrogates endtoend timerev
   events intervals spikespec spikeauto
-  henon ikeda lorenz ar-run xrecur
+  henon ikeda lorenz xrecur
 )
 
 foreach(prog ${TISEAN_F_PROGRAMS})
