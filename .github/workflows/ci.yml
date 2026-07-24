@@ -26,6 +26,17 @@ jobs:
       - name: Install Python deps
         run: |
           pip3 install numpy pytest
+          pip3 install ./python
+
+      - name: Verify Python bindings are importable
+        run: |
+          # tests/test_ar_model_bindings.py uses pytest.importorskip("tisean")
+          # so local runs can skip it without the bindings built - but that
+          # also means a broken/missing install here would silently skip
+          # those tests instead of failing the build. Check it directly so a
+          # broken package install fails CI instead of just vanishing from
+          # the test count.
+          python3 -c "import tisean"
 
       - name: Run tests
         run: |

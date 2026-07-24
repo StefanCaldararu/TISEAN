@@ -7,6 +7,14 @@ tisean = pytest.importorskip("tisean")
 
 AR_MODEL_TOO_MANY_POLES = 52
 
+# The CLI prints everything through "%e" (6 digits after the point, so ~7
+# significant digits), so comparisons against numbers parsed from its
+# stdout can't be tighter than that text roundtrip allows - confirmed by
+# comparing against a full-precision (%.17g) build of the same fit/iterate
+# call, which matches the Python bindings exactly. rtol=1e-7 (float64's own
+# precision) is tighter than the CLI's own output format can ever satisfy.
+CLI_TEXT_TOL = dict(rtol=1e-6, atol=1e-6)
+
 
 def run_cli(args):
     result = subprocess.run(
@@ -40,6 +48,20 @@ def parse_coeff_rows(text):
     return np.array(rows)
 
 
+def variance_mean(row):
+    """Mirrors variance.c's mean: a plain sequential sum divided by the
+    count. numpy's .mean() (pairwise summation) and Python's built-in
+    sum() (compensated since 3.12) are both more accurate than this and so
+    round differently in the last bit or two - which is enough for
+    ar-model's iterate() to visibly diverge from the CLI after enough
+    steps, since it feeds the fitted coefficients back through themselves
+    on every step."""
+    total = 0.0
+    for v in row:
+        total += v
+    return total / len(row)
+
+
 def load_columns(path, columns, length=None, exclude=0):
     """Replicates get_multi_series()'s -x/-l/-c handling: skip `exclude`
     lines, keep up to `length` of the rest, then pick `columns` (1-indexed,
@@ -54,7 +76,8 @@ def load_columns(path, columns, length=None, exclude=0):
         raw = raw[:length]
     raw = raw[:, [c - 1 for c in columns]]
     series = raw.T.copy()
-    series -= series.mean(axis=1, keepdims=True)
+    for row in series:
+        row -= variance_mean(row)
     return series
 
 
@@ -87,9 +110,9 @@ def test_fit_matches_cli_across_dim_poles_and_columns(label, datafile, poles, co
 
     assert model.dim == dim
     assert model.poles == poles
-    np.testing.assert_allclose(model.coeff.T, cli_coeff, rtol=1e-7, atol=1e-7)
+    np.testing.assert_allclose(model.coeff.T, cli_coeff, **CLI_TEXT_TOL)
     np.testing.assert_allclose(
-        model.residuals[:, poles:].T, cli_residuals, rtol=1e-7, atol=1e-7
+        model.residuals[:, poles:].T, cli_residuals, **CLI_TEXT_TOL
     )
 
 
@@ -105,7 +128,7 @@ def test_fit_matches_cli_with_length_and_exclude():
 
     assert model.length == length
     np.testing.assert_allclose(
-        model.residuals[:, poles:].T, cli_residuals, rtol=1e-7, atol=1e-7
+        model.residuals[:, poles:].T, cli_residuals, **CLI_TEXT_TOL
     )
 
 
@@ -122,7 +145,7 @@ def test_fit_matches_cli_default_dim_and_poles():
     assert model.dim == 1
     assert model.poles == 1
     np.testing.assert_allclose(
-        model.residuals[:, model.poles :].T, cli_residuals, rtol=1e-7, atol=1e-7
+        model.residuals[:, model.poles :].T, cli_residuals, **CLI_TEXT_TOL
     )
 
 
@@ -134,13 +157,38 @@ def test_iterate_matches_cli_dash_s_with_default_seed(ilength):
 
     out = run_cli(["-m2", f"-p{poles}", f"-s{ilength}", datafile])
     cli_iterated = parse_data_rows(out)
-
-    series = load_columns(datafile, columns)
-    model = tisean.ar_model.fit(series, poles=poles)
-    py_iterated = model.iterate(ilength)
-
     assert cli_iterated.shape == (ilength, 2)
-    np.testing.assert_allclose(py_iterated, cli_iterated, rtol=1e-7, atol=1e-7)
+
+    # rand.c's rnd_init() only actually (re)seeds once per process (see
+    # test_ar_model_iterate_is_deterministic_given_a_seed below), so calling
+    # iterate() here in the same pytest process - after other tests/other
+    # parametrizations of this same test have already called it - would
+    # compare against stale RNG state instead of a fresh seed like the CLI
+    # subprocess gets. Do the fit+iterate in its own fresh subprocess too.
+    # Centering must match variance_mean()'s plain sequential sum (see its
+    # docstring), not a faster/more-accurate mean, or the fitted
+    # coefficients pick up last-bit differences that iterate() visibly
+    # amplifies over enough steps.
+    script = (
+        "import numpy as np, tisean\n"
+        f"raw = np.loadtxt({datafile!r})[:, {[c - 1 for c in columns]!r}]\n"
+        "series = raw.T.copy()\n"
+        "for row in series:\n"
+        "    total = 0.0\n"
+        "    for v in row:\n"
+        "        total += v\n"
+        "    row -= total / len(row)\n"
+        f"model = tisean.ar_model.fit(series, poles={poles})\n"
+        f"print(model.iterate({ilength}).tolist())\n"
+    )
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    py_iterated = np.array(eval(result.stdout))
+
+    np.testing.assert_allclose(py_iterated, cli_iterated, **CLI_TEXT_TOL)
 
 
 def test_ar_model_iterate_is_deterministic_given_a_seed():

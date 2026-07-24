@@ -85,7 +85,7 @@ void scan_options(int argc,char **argv)
     sscanf(out,"%u",&dim);
     dimset=1;
   }
-  if ((out=check_option(argv,argc,'c','u')) != NULL)
+  if ((out=check_option(argv,argc,'c','s')) != NULL)
     column=out;
   if ((out=check_option(argv,argc,'V','u')) != NULL)
     sscanf(out,"%u",&verbosity);
