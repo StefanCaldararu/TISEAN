@@ -29,6 +29,7 @@
 #include <limits.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/ar-model.h"
 
 #define WID_STR "Fits an multivariate AR model to the data and gives\
  the coefficients\n\tand the residues (or an iterated model)"
@@ -103,7 +104,7 @@ void set_averages_to_zero(void)
 {
   double var;
   long i,j;
-  
+
   for (i=0;i<dim;i++) {
     variance(series[i],length,&my_average[i],&var);
     for (j=0;j<length;j++)
@@ -111,142 +112,43 @@ void set_averages_to_zero(void)
   }
 }
 
-double** build_matrix(double **mat)
+/* Prints an iterated model to stdout (file==NULL) or to file, in the
+   original ar-model CLI format. The seed 0x44325 matches the historical
+   CLI behaviour of ar_model_iterate() being always seeded the same way. */
+void print_iterated_model(const ARModel *model,FILE *file)
 {
-  long n,i1,j1,i2,j2,hi,hj;
-  double norm;
-  
-  norm=1./((double)length-(double)poles);
+  double **out;
+  long n,d;
 
-  for (i1=0;i1<dim;i1++)
-    for (i2=0;i2<poles;i2++) {
-      hi=i1*poles+i2;
-      for (j1=0;j1<dim;j1++)
-	for (j2=0;j2<poles;j2++) {
-	  hj=j1*poles+j2;
-	  mat[hi][hj]=0.0;
-	  for (n=poles-1;n<length-1;n++)
-	    mat[hi][hj] += series[i1][n-i2]*series[j1][n-j2];
-	  mat[hi][hj] *= norm;
-	}
-    }
+  out=ar_model_iterate(model,ilength,0x44325);
 
-  return invert_matrix(mat,(unsigned int)(dim*poles));
-}
-
-void build_vector(double *vec,long comp)
-{
-  long i1,i2,hi,n;
-  double norm;
-
-  norm=1./((double)length-(double)poles);
-
-  for (i1=0;i1<poles*dim;i1++)
-    vec[i1]=0.0;
-  
-  for (i1=0;i1<dim;i1++)
-    for (i2=0;i2<poles;i2++) {
-      hi=i1*poles+i2;
-      for (n=poles-1;n<length-1;n++)
-	vec[hi] += series[comp][n+1]*series[i1][n-i2];
-      vec[hi] *= norm;
-    }
-}
-
-double* multiply_matrix_vector(double **mat,double *vec)
-{
-  long i,j;
-  double *new_vec;
-
-  check_alloc(new_vec=(double*)malloc(sizeof(double)*poles*dim));
-
-  for (i=0;i<poles*dim;i++) {
-    new_vec[i]=0.0;
-    for (j=0;j<poles*dim;j++)
-      new_vec[i] += mat[i][j]*vec[j];
-  }
-  return new_vec;
-}
-
-double* make_residuals(double **diff,double **coeff)
-{
-  long n,d,i,j;
-  double *resi;
-  
-  check_alloc(resi=(double*)malloc(sizeof(double)*dim));
-  for (i=0;i<dim;i++)
-    resi[i]=0.0;
-
-  for (n=poles-1;n<length-1;n++) {
-    for (d=0;d<dim;d++) {
-      diff[d][n+1]=series[d][n+1];
-      for (i=0;i<dim;i++)
-	for (j=0;j<poles;j++)
-	  diff[d][n+1] -= coeff[d][i*poles+j]*series[i][n-j];
-      resi[d] += sqr(diff[d][n+1]);
-    }
-  }
-  for (i=0;i<dim;i++)
-    resi[i]=sqrt(resi[i]/((double)length-(double)poles));
-
-  return resi;
-}
-
-void iterate_model(double **coeff,double *sigma,FILE *file)
-{
-  long i,j,i1,i2,n,d;
-  double **iterate,*swap;
-  
-  check_alloc(iterate=(double**)malloc(sizeof(double*)*(poles+1)));
-  for (i=0;i<=poles;i++)
-    check_alloc(iterate[i]=(double*)malloc(sizeof(double)*dim));
-  rnd_init(0x44325);
-  for (i=0;i<1000;i++)
-    gaussian(1.0);
-  for (i=0;i<dim;i++)
-    for (j=0;j<poles;j++)
-      iterate[j][i]=gaussian(sigma[i]);
-  
   for (n=0;n<ilength;n++) {
     for (d=0;d<dim;d++) {
-      iterate[poles][d]=gaussian(sigma[d]);
-      for (i1=0;i1<dim;i1++)
-	for (i2=0;i2<poles;i2++)
-	  iterate[poles][d] += coeff[d][i1*poles+i2]*iterate[poles-1-i2][i1];
+      if (file != NULL)
+	fprintf(file,"%e ",out[n][d]);
+      else
+	printf("%e ",out[n][d]);
     }
-    if (file != NULL) {
-      for (d=0;d<dim;d++)
-	fprintf(file,"%e ",iterate[poles][d]);
+    if (file != NULL)
       fprintf(file,"\n");
-    }
-    else {
-      for (d=0;d<dim;d++)
-	printf("%e ",iterate[poles][d]);
+    else
       printf("\n");
-    }
-
-    swap=iterate[0];
-    for (i=0;i<poles;i++)
-      iterate[i]=iterate[i+1];
-    iterate[poles]=swap;
   }
 
-  for (i=0;i<=poles;i++)
-    free(iterate[i]);
-  free(iterate);
+  ar_model_iterate_free(out,ilength);
 }
 
 int main(int argc,char **argv)
 {
   char stdi=0;
-  double *pm;
   long i,j;
   FILE *file;
-  double **mat,**inverse,*vec,**coeff,**diff,avpm;
-  
+  double avpm;
+  ARModel *model;
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -285,40 +187,23 @@ int main(int argc,char **argv)
     fprintf(stderr,"It makes no sense to have more poles than data! Exiting\n");
     exit(AR_MODEL_TOO_MANY_POLES);
   }
-  
-  
-  check_alloc(vec=(double*)malloc(sizeof(double)*poles*dim));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*poles*dim));
-  for (i=0;i<poles*dim;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*poles*dim));
 
-  check_alloc(coeff=(double**)malloc(sizeof(double*)*dim));
-  inverse=build_matrix(mat);
-  for (i=0;i<dim;i++) {
-    build_vector(vec,i);
-    coeff[i]=multiply_matrix_vector(inverse,vec);
-  }
+  model=ar_model_fit((double *const *)series,length,dim,poles);
 
-  check_alloc(diff=(double**)malloc(sizeof(double*)*dim));
-  for (i=0;i<dim;i++)
-    check_alloc(diff[i]=(double*)malloc(sizeof(double)*length));
-
-  pm=make_residuals(diff,coeff);
-  
   if (stdo) {
-    avpm=pm[0]*pm[0];
+    avpm=model->rms_error[0]*model->rms_error[0];
     for (i=1;i<dim;i++)
-      avpm += pm[i]*pm[i];
+      avpm += model->rms_error[i]*model->rms_error[i];
     avpm=sqrt(avpm/dim);
     printf("#average forcast error= %e\n",avpm);
     printf("#individual forecast errors: ");
     for (i=0;i<dim;i++)
-      printf("%e ",pm[i]);
+      printf("%e ",model->rms_error[i]);
     printf("\n");
     for (i=0;i<dim*poles;i++) {
       printf("# ");
       for (j=0;j<dim;j++)
-	printf("%e ",coeff[j][i]);
+	printf("%e ",model->coeff[j][i]);
       printf("\n");
     }
     if (!run_model || (verbosity&VER_USR1)) {
@@ -327,32 +212,32 @@ int main(int argc,char **argv)
 	  printf("#");
 	for (j=0;j<dim;j++)
 	  if (verbosity&VER_USR2)
-	    printf("%e %e ",series[j][i]+my_average[j],diff[j][i]);
+	    printf("%e %e ",series[j][i]+my_average[j],model->residuals[j][i]);
 	  else
-	    printf("%e ",diff[j][i]);
+	    printf("%e ",model->residuals[j][i]);
 	printf("\n");
       }
     }
     if (run_model && (ilength > 0))
-      iterate_model(coeff,pm,NULL);
+      print_iterated_model(model,NULL);
   }
   else {
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for output\n",outfile);
-    avpm=pm[0]*pm[0];
+    avpm=model->rms_error[0]*model->rms_error[0];
     for (i=1;i<dim;i++)
-      avpm += pm[i]*pm[i];
+      avpm += model->rms_error[i]*model->rms_error[i];
     avpm=sqrt(avpm/dim);
     fprintf(file,"#average forcast error= %e\n",avpm);
     fprintf(file,"#individual forecast errors: ");
     for (i=0;i<dim;i++)
-      fprintf(file,"%e ",pm[i]);
+      fprintf(file,"%e ",model->rms_error[i]);
     fprintf(file,"\n");
     for (i=0;i<dim*poles;i++) {
       fprintf(file,"# ");
       for (j=0;j<dim;j++)
-	fprintf(file,"%e ",coeff[j][i]);
+	fprintf(file,"%e ",model->coeff[j][i]);
       fprintf(file,"\n");
     }
     if (!run_model || (verbosity&VER_USR1)) {
@@ -361,14 +246,14 @@ int main(int argc,char **argv)
 	  fprintf(file,"#");
 	for (j=0;j<dim;j++)
 	  if (verbosity&VER_USR2)
-	    fprintf(file,"%e %e ",series[j][i]+my_average[j],diff[j][i]);
+	    fprintf(file,"%e %e ",series[j][i]+my_average[j],model->residuals[j][i]);
 	  else
-	    fprintf(file,"%e ",diff[j][i]);
+	    fprintf(file,"%e ",model->residuals[j][i]);
 	fprintf(file,"\n");
       }
     }
     if (run_model && (ilength > 0))
-      iterate_model(coeff,pm,file);
+      print_iterated_model(model,file);
     fclose(file);
   }
 
@@ -376,20 +261,7 @@ int main(int argc,char **argv)
     free(outfile);
   if (infile != NULL)
     free(infile);
-  free(vec);
-  for (i=0;i<poles*dim;i++) {
-    free(mat[i]);
-    free(inverse[i]);
-  }
-  free(mat);
-  free(inverse);
-  for (i=0;i<dim;i++) {
-    free(coeff[i]);
-    free(diff[i]);
-  }
-  free(coeff);
-  free(diff);
-  free(pm);
+  ar_model_free(model);
 
   return 0;
 }
