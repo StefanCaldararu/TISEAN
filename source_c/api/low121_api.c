@@ -22,6 +22,7 @@
    dependency on argv parsing or file-scope globals. The math here is
    unchanged from the original inline filter loop. */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include "../routines/tsa.h"
 #include "../../include/low121.h"
