@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/low121.h"
 
 #define WID_STR "Simple lowpass filter in the time domain"
 
@@ -122,10 +123,7 @@ int main(int argc,char **argv)
   
   if (verbosity&VER_USR1) {
     for (iter=1;iter<=iterations;iter++) {
-      new[0]=(2.0*series[0]+2.0*series[1])/4.0;
-      new[length-1]=(2.0*series[length-1]+2.0*series[length-2])/4.0;
-      for (i=1;i<length-1;i++)
-	new[i]=(series[i-1]+2.0*series[i]+series[i+1])/4.0;
+      low121_pass(series,length,new);
 	sprintf(ofname,"%s.%d",outfile,iter);
 	test_outfile(ofname);
 	file=fopen(ofname,"w");
@@ -145,10 +143,7 @@ int main(int argc,char **argv)
   }
   else {
     for (iter=1;iter<=iterations;iter++) {
-      new[0]=(2.0*series[0]+2.0*series[1])/4.0;
-      new[length-1]=(2.0*series[length-1]+2.0*series[length-2])/4.0;
-      for (i=1;i<length-1;i++)
-	new[i]=(series[i-1]+2.0*series[i]+series[i+1])/4.0;
+      low121_pass(series,length,new);
       for (i=0;i<length;i++)
 	series[i]=new[i];
     }

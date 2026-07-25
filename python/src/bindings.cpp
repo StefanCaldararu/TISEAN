@@ -1,7 +1,6 @@
-// pybind11 bindings for TISEAN's reentrant C APIs.
-// Starts with ar-model (source_c/api/ar_model_api.c); more routines will
-// get their own wrapper class/functions here (or their own .cpp file) as
-// they get the same "extract a reentrant API" treatment.
+// pybind11 bindings for TISEAN's reentrant C APIs (source_c/api/*.c). More
+// routines get their own wrapper class/functions here (or their own .cpp
+// file) as they get the same "extract a reentrant API" treatment.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -11,6 +10,7 @@
 #include <vector>
 
 #include "ar-model.h"
+#include "low121.h"
 
 namespace py = pybind11;
 
@@ -92,6 +92,22 @@ fit(py::array_t<double, py::array::c_style | py::array::forcecast> series,
   return std::make_unique<ARModelWrapper>(model);
 }
 
+py::array_t<double>
+low121_filter_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		       unsigned int iterations)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length < 2)
+    throw std::invalid_argument("series must have at least 2 points");
+
+  py::array_t<double> out((py::ssize_t)length);
+  low121_filter(series.data(), length, iterations, out.mutable_data());
+  return out;
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -121,4 +137,12 @@ PYBIND11_MODULE(_tisean, m)
       "Fit a multivariate AR model to `series` (shape (dim, length)).\n\n"
       "series is expected to already be centered (zero mean per row), the\n"
       "same way the ar-model CLI centers its input before fitting.");
+
+  auto low121 = m.def_submodule(
+      "low121", "Simple [1,2,1]/4 lowpass filter (source_c/low121.c)");
+
+  low121.def(
+      "filter", &low121_filter_binding, py::arg("series"), py::arg("iterations") = 1,
+      "Apply the [1,2,1]/4 lowpass filter to `series` `iterations` times, "
+      "returning a new 1D array of the same length.");
 }
