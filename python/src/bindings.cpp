@@ -11,6 +11,7 @@
 
 #include "ar-model.h"
 #include "low121.h"
+#include "histogram.h"
 
 namespace py = pybind11;
 
@@ -108,6 +109,48 @@ low121_filter_binding(py::array_t<double, py::array::c_style | py::array::forcec
   return out;
 }
 
+// Owns a Histogram* and exposes its fields as numpy arrays. Not copyable
+// since Histogram doesn't support that; pybind11 holds it by unique_ptr.
+class HistogramWrapper {
+public:
+  explicit HistogramWrapper(Histogram *hist) : hist_(hist) {}
+  HistogramWrapper(const HistogramWrapper &) = delete;
+  HistogramWrapper &operator=(const HistogramWrapper &) = delete;
+  ~HistogramWrapper() { histogram_free(hist_); }
+
+  unsigned long base() const { return hist_->base; }
+  double min() const { return hist_->min; }
+  double interval() const { return hist_->interval; }
+  double average() const { return hist_->average; }
+  double var() const { return hist_->var; }
+
+  py::array_t<long> box() const {
+    py::array_t<long> out((py::ssize_t)hist_->base);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < hist_->base; i++)
+      buf(i) = hist_->box[i];
+    return out;
+  }
+
+private:
+  Histogram *hist_;
+};
+
+std::unique_ptr<HistogramWrapper>
+histogram_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned long base)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  Histogram *hist = histogram_compute(series.data(), length, base);
+  if (hist == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<HistogramWrapper>(hist);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -145,4 +188,24 @@ PYBIND11_MODULE(_tisean, m)
       "filter", &low121_filter_binding, py::arg("series"), py::arg("iterations") = 1,
       "Apply the [1,2,1]/4 lowpass filter to `series` `iterations` times, "
       "returning a new 1D array of the same length.");
+
+  auto histogram = m.def_submodule(
+      "histogram", "Data histogram over a rescaled [0,1) range (source_c/histogram.c)");
+
+  py::class_<HistogramWrapper>(histogram, "Histogram")
+      .def_property_readonly("base", &HistogramWrapper::base)
+      .def_property_readonly("min", &HistogramWrapper::min,
+			      "Minimum of the raw (un-rescaled) series")
+      .def_property_readonly("interval", &HistogramWrapper::interval,
+			      "max - min of the raw series")
+      .def_property_readonly("average", &HistogramWrapper::average)
+      .def_property_readonly("var", &HistogramWrapper::var,
+			      "Standard deviation of the raw series")
+      .def_property_readonly("box", &HistogramWrapper::box,
+			      "Bin counts, shape (base,)");
+
+  histogram.def(
+      "compute", &histogram_compute_binding, py::arg("series"), py::arg("base") = 50,
+      "Bin `series` into `base` equal-width intervals over its own "
+      "[min,max] range, the same way the histogram CLI does it.");
 }

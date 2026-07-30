@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/histogram.h"
 
 #define WID_STR "Makes a histogram of the data"
 
@@ -90,9 +91,10 @@ void scan_options(int n,char **str)
 int main(int argc,char **argv)
 {
   char stdi=0;
-  unsigned long i,j;
+  unsigned long i;
   double x,norm,size=1.0,size2=1.0;
   FILE *fout;
+  Histogram *hist;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -122,22 +124,20 @@ int main(int argc,char **argv)
     test_outfile(outfile);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  variance(series,length,&average,&var);
-  rescale_data(series,length,&min,&max);
-  
-  
+  hist=histogram_compute(series,length,base);
+  if (hist == NULL) {
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
+  }
+  average=hist->average;
+  var=hist->var;
+  min=hist->min;
+  max=hist->interval;
+  box=hist->box;
+
   if (base > 0) {
-    check_alloc(box=(long*)malloc(sizeof(long)*base));
-    for (i=0;i<base;i++)
-      box[i]=0;
     size=1./base;
     size2=size/2.0;
-    for (i=0;i<length;i++) {
-      if (series[i] > (1.0-size2))
-	series[i]=1.0-size2;
-      j=(long)(series[i]*base);
-      box[j]++;
-    }
   }
 
   norm=1.0/(double)length;
@@ -166,5 +166,6 @@ int main(int argc,char **argv)
       fflush(stdout);
     }
   }
+  histogram_free(hist);
   return 0;
 }
