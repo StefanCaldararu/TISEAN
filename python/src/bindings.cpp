@@ -1,7 +1,6 @@
-// pybind11 bindings for TISEAN's reentrant C APIs.
-// Starts with ar-model (source_c/api/ar_model_api.c); more routines will
-// get their own wrapper class/functions here (or their own .cpp file) as
-// they get the same "extract a reentrant API" treatment.
+// pybind11 bindings for TISEAN's reentrant C APIs (source_c/api/*.c). More
+// routines get their own wrapper class/functions here (or their own .cpp
+// file) as they get the same "extract a reentrant API" treatment.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -11,6 +10,7 @@
 #include <vector>
 
 #include "ar-model.h"
+#include "corr.h"
 
 namespace py = pybind11;
 
@@ -92,6 +92,47 @@ fit(py::array_t<double, py::array::c_style | py::array::forcecast> series,
   return std::make_unique<ARModelWrapper>(model);
 }
 
+// Owns a CorrResult* and exposes its fields as numpy arrays. Not copyable
+// since CorrResult doesn't support that; pybind11 holds it by unique_ptr.
+class CorrResultWrapper {
+public:
+  explicit CorrResultWrapper(CorrResult *result) : result_(result) {}
+  CorrResultWrapper(const CorrResultWrapper &) = delete;
+  CorrResultWrapper &operator=(const CorrResultWrapper &) = delete;
+  ~CorrResultWrapper() { corr_free(result_); }
+
+  unsigned long length() const { return result_->length; }
+  unsigned long tau() const { return result_->tau; }
+  double average() const { return result_->average; }
+  double stddev() const { return result_->stddev; }
+
+  py::array_t<double> values() const {
+    py::array_t<double> out((py::ssize_t)(result_->tau + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i <= result_->tau; i++)
+      buf(i) = result_->values[i];
+    return out;
+  }
+
+private:
+  CorrResult *result_;
+};
+
+std::unique_ptr<CorrResultWrapper>
+corr_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned long tau, bool normalize)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  CorrResult *result = corr_compute(series.data(), length, tau, normalize ? 1 : 0);
+  if (result == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<CorrResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -121,4 +162,27 @@ PYBIND11_MODULE(_tisean, m)
       "Fit a multivariate AR model to `series` (shape (dim, length)).\n\n"
       "series is expected to already be centered (zero mean per row), the\n"
       "same way the ar-model CLI centers its input before fitting.");
+
+  auto corr = m.def_submodule(
+      "corr", "Autocorrelation estimation (source_c/corr.c)");
+
+  py::class_<CorrResultWrapper>(corr, "CorrResult")
+      .def_property_readonly("length", &CorrResultWrapper::length)
+      .def_property_readonly("tau", &CorrResultWrapper::tau,
+			      "Maximum lag actually computed")
+      .def_property_readonly("average", &CorrResultWrapper::average,
+			      "Mean of the raw (un-centered) series")
+      .def_property_readonly("stddev", &CorrResultWrapper::stddev,
+			      "Standard deviation of the raw series")
+      .def_property_readonly("values", &CorrResultWrapper::values,
+			      "Correlation values for lags 0..tau, shape (tau+1,)");
+
+  corr.def(
+      "compute", &corr_compute_binding, py::arg("series"), py::arg("tau") = 100,
+      py::arg("normalize") = true,
+      "Estimate the autocorrelation of `series` for lags 0..tau (tau is\n"
+      "clamped to len(series)-1 if too large). If normalize is True\n"
+      "(default), the series is centered by its own mean and each lag is\n"
+      "divided by the variance; if False, the raw series is used\n"
+      "unscaled, matching the CLI's -n flag.");
 }
