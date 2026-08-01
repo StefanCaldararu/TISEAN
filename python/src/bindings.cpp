@@ -12,6 +12,7 @@
 #include "ar-model.h"
 #include "low121.h"
 #include "histogram.h"
+#include "polypar.h"
 
 namespace py = pybind11;
 
@@ -151,6 +152,44 @@ histogram_compute_binding(py::array_t<double, py::array::c_style | py::array::fo
   return std::make_unique<HistogramWrapper>(hist);
 }
 
+// Owns a PolyParResult* and exposes its fields as numpy arrays. Not
+// copyable since PolyParResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PolyParResultWrapper {
+public:
+  explicit PolyParResultWrapper(PolyParResult *result) : result_(result) {}
+  PolyParResultWrapper(const PolyParResultWrapper &) = delete;
+  PolyParResultWrapper &operator=(const PolyParResultWrapper &) = delete;
+  ~PolyParResultWrapper() { polypar_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int order() const { return result_->order; }
+  unsigned long count() const { return result_->count; }
+
+  py::array_t<unsigned int> params() const {
+    unsigned int dim = result_->dim;
+    unsigned long count = result_->count;
+    py::array_t<unsigned int> out({(py::ssize_t)count, (py::ssize_t)dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < count; i++)
+      for (unsigned int j = 0; j < dim; j++)
+	buf(i, j) = result_->params[i * dim + j];
+    return out;
+  }
+
+private:
+  PolyParResult *result_;
+};
+
+std::unique_ptr<PolyParResultWrapper> generate(unsigned int dim, unsigned int order)
+{
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  PolyParResult *result = polypar_generate(dim, order);
+  return std::make_unique<PolyParResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -208,4 +247,19 @@ PYBIND11_MODULE(_tisean, m)
       "compute", &histogram_compute_binding, py::arg("series"), py::arg("base") = 50,
       "Bin `series` into `base` equal-width intervals over its own "
       "[min,max] range, the same way the histogram CLI does it.");
+
+  auto polypar = m.def_submodule(
+      "polypar", "Polynomial exponent enumeration (source_c/polypar.c)");
+
+  py::class_<PolyParResultWrapper>(polypar, "PolyParResult")
+      .def_property_readonly("dim", &PolyParResultWrapper::dim)
+      .def_property_readonly("order", &PolyParResultWrapper::order)
+      .def_property_readonly("count", &PolyParResultWrapper::count)
+      .def_property_readonly("params", &PolyParResultWrapper::params,
+			      "Exponent combinations, shape (count, dim)");
+
+  polypar.def(
+      "generate", &generate, py::arg("dim") = 2, py::arg("order") = 3,
+      "Enumerate every combination of `dim` non-negative integer exponents "
+      "that sum to at most `order`.");
 }
