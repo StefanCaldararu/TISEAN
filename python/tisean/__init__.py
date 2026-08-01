@@ -1,4 +1,4 @@
 from . import _tisean
-from ._tisean import ar_model, low121, histogram, polypar, corr
+from ._tisean import ar_model, low121, histogram, polypar, corr, xcor
 
-__all__ = ["ar_model", "low121", "histogram", "polypar", "corr"]
+__all__ = ["ar_model", "low121", "histogram", "polypar", "corr", "xcor"]

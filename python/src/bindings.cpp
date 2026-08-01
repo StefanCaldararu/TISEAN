@@ -14,6 +14,7 @@
 #include "histogram.h"
 #include "polypar.h"
 #include "corr.h"
+#include "xcor.h"
 
 namespace py = pybind11;
 
@@ -232,6 +233,52 @@ corr_compute_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<CorrResultWrapper>(result);
 }
 
+// Owns an XcorResult* and exposes its fields as numpy arrays. Not copyable
+// since XcorResult doesn't support that; pybind11 holds it by unique_ptr.
+class XcorResultWrapper {
+public:
+  explicit XcorResultWrapper(XcorResult *result) : result_(result) {}
+  XcorResultWrapper(const XcorResultWrapper &) = delete;
+  XcorResultWrapper &operator=(const XcorResultWrapper &) = delete;
+  ~XcorResultWrapper() { xcor_free(result_); }
+
+  unsigned long length() const { return result_->length; }
+  unsigned long tau() const { return result_->tau; }
+  double average1() const { return result_->average1; }
+  double stddev1() const { return result_->stddev1; }
+  double average2() const { return result_->average2; }
+  double stddev2() const { return result_->stddev2; }
+
+  py::array_t<double> values() const {
+    py::array_t<double> out((py::ssize_t)(2 * result_->tau + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < 2 * result_->tau + 1; i++)
+      buf(i) = result_->values[i];
+    return out;
+  }
+
+private:
+  XcorResult *result_;
+};
+
+std::unique_ptr<XcorResultWrapper>
+xcor_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series1,
+		      py::array_t<double, py::array::c_style | py::array::forcecast> series2,
+		      long tau)
+{
+  if (series1.ndim() != 1 || series2.ndim() != 1)
+    throw std::invalid_argument("series1 and series2 must be 1D arrays");
+  if (series1.shape(0) != series2.shape(0))
+    throw std::invalid_argument("series1 and series2 must have the same length");
+
+  auto length = (unsigned long)series1.shape(0);
+  XcorResult *result = xcor_compute(series1.data(), series2.data(), length, tau);
+  if (result == nullptr)
+    throw std::invalid_argument("series1 and series2 must be non-empty and non-constant");
+
+  return std::make_unique<XcorResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -327,4 +374,32 @@ PYBIND11_MODULE(_tisean, m)
       "(default), the series is centered by its own mean and each lag is\n"
       "divided by the variance; if False, the raw series is used\n"
       "unscaled, matching the CLI's -n flag.");
+
+  auto xcor = m.def_submodule(
+      "xcor", "Crosscorrelation estimation of two data sets (source_c/xcor.c)");
+
+  py::class_<XcorResultWrapper>(xcor, "XcorResult")
+      .def_property_readonly("length", &XcorResultWrapper::length)
+      .def_property_readonly("tau", &XcorResultWrapper::tau,
+			      "Maximum lag actually computed")
+      .def_property_readonly("average1", &XcorResultWrapper::average1,
+			      "Mean of the raw (un-centered) first series")
+      .def_property_readonly("stddev1", &XcorResultWrapper::stddev1,
+			      "Standard deviation of the raw first series")
+      .def_property_readonly("average2", &XcorResultWrapper::average2,
+			      "Mean of the raw (un-centered) second series")
+      .def_property_readonly("stddev2", &XcorResultWrapper::stddev2,
+			      "Standard deviation of the raw second series")
+      .def_property_readonly("values", &XcorResultWrapper::values,
+			      "Crosscorrelation values for lags -tau..tau, "
+			      "shape (2*tau+1,)");
+
+  xcor.def(
+      "compute", &xcor_compute_binding, py::arg("series1"), py::arg("series2"),
+      py::arg("tau") = 100,
+      "Estimate the crosscorrelation of `series1` against `series2` for\n"
+      "lags -tau..tau (tau is clamped to len(series)-1 if too large or\n"
+      "negative). Both series are centered by their own mean and each lag\n"
+      "is divided by both series' standard deviations, matching xcor.c's\n"
+      "main().");
 }
