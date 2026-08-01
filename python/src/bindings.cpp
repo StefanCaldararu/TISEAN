@@ -1,7 +1,6 @@
-// pybind11 bindings for TISEAN's reentrant C APIs.
-// Starts with ar-model (source_c/api/ar_model_api.c); more routines will
-// get their own wrapper class/functions here (or their own .cpp file) as
-// they get the same "extract a reentrant API" treatment.
+// pybind11 bindings for TISEAN's reentrant C APIs (source_c/api/*.c). More
+// routines get their own wrapper class/functions here (or their own .cpp
+// file) as they get the same "extract a reentrant API" treatment.
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -11,6 +10,10 @@
 #include <vector>
 
 #include "ar-model.h"
+#include "low121.h"
+#include "histogram.h"
+#include "polypar.h"
+#include "corr.h"
 
 namespace py = pybind11;
 
@@ -92,6 +95,143 @@ fit(py::array_t<double, py::array::c_style | py::array::forcecast> series,
   return std::make_unique<ARModelWrapper>(model);
 }
 
+py::array_t<double>
+low121_filter_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		       unsigned int iterations)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length < 2)
+    throw std::invalid_argument("series must have at least 2 points");
+
+  py::array_t<double> out((py::ssize_t)length);
+  low121_filter(series.data(), length, iterations, out.mutable_data());
+  return out;
+}
+
+// Owns a Histogram* and exposes its fields as numpy arrays. Not copyable
+// since Histogram doesn't support that; pybind11 holds it by unique_ptr.
+class HistogramWrapper {
+public:
+  explicit HistogramWrapper(Histogram *hist) : hist_(hist) {}
+  HistogramWrapper(const HistogramWrapper &) = delete;
+  HistogramWrapper &operator=(const HistogramWrapper &) = delete;
+  ~HistogramWrapper() { histogram_free(hist_); }
+
+  unsigned long base() const { return hist_->base; }
+  double min() const { return hist_->min; }
+  double interval() const { return hist_->interval; }
+  double average() const { return hist_->average; }
+  double var() const { return hist_->var; }
+
+  py::array_t<long> box() const {
+    py::array_t<long> out((py::ssize_t)hist_->base);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < hist_->base; i++)
+      buf(i) = hist_->box[i];
+    return out;
+  }
+
+private:
+  Histogram *hist_;
+};
+
+std::unique_ptr<HistogramWrapper>
+histogram_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned long base)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  Histogram *hist = histogram_compute(series.data(), length, base);
+  if (hist == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<HistogramWrapper>(hist);
+}
+
+// Owns a PolyParResult* and exposes its fields as numpy arrays. Not
+// copyable since PolyParResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PolyParResultWrapper {
+public:
+  explicit PolyParResultWrapper(PolyParResult *result) : result_(result) {}
+  PolyParResultWrapper(const PolyParResultWrapper &) = delete;
+  PolyParResultWrapper &operator=(const PolyParResultWrapper &) = delete;
+  ~PolyParResultWrapper() { polypar_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int order() const { return result_->order; }
+  unsigned long count() const { return result_->count; }
+
+  py::array_t<unsigned int> params() const {
+    unsigned int dim = result_->dim;
+    unsigned long count = result_->count;
+    py::array_t<unsigned int> out({(py::ssize_t)count, (py::ssize_t)dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < count; i++)
+      for (unsigned int j = 0; j < dim; j++)
+	buf(i, j) = result_->params[i * dim + j];
+    return out;
+  }
+
+private:
+  PolyParResult *result_;
+};
+
+std::unique_ptr<PolyParResultWrapper> generate(unsigned int dim, unsigned int order)
+{
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  PolyParResult *result = polypar_generate(dim, order);
+  return std::make_unique<PolyParResultWrapper>(result);
+}
+
+// Owns a CorrResult* and exposes its fields as numpy arrays. Not copyable
+// since CorrResult doesn't support that; pybind11 holds it by unique_ptr.
+class CorrResultWrapper {
+public:
+  explicit CorrResultWrapper(CorrResult *result) : result_(result) {}
+  CorrResultWrapper(const CorrResultWrapper &) = delete;
+  CorrResultWrapper &operator=(const CorrResultWrapper &) = delete;
+  ~CorrResultWrapper() { corr_free(result_); }
+
+  unsigned long length() const { return result_->length; }
+  unsigned long tau() const { return result_->tau; }
+  double average() const { return result_->average; }
+  double stddev() const { return result_->stddev; }
+
+  py::array_t<double> values() const {
+    py::array_t<double> out((py::ssize_t)(result_->tau + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i <= result_->tau; i++)
+      buf(i) = result_->values[i];
+    return out;
+  }
+
+private:
+  CorrResult *result_;
+};
+
+std::unique_ptr<CorrResultWrapper>
+corr_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned long tau, bool normalize)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  CorrResult *result = corr_compute(series.data(), length, tau, normalize ? 1 : 0);
+  if (result == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<CorrResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -121,4 +261,70 @@ PYBIND11_MODULE(_tisean, m)
       "Fit a multivariate AR model to `series` (shape (dim, length)).\n\n"
       "series is expected to already be centered (zero mean per row), the\n"
       "same way the ar-model CLI centers its input before fitting.");
+
+  auto low121 = m.def_submodule(
+      "low121", "Simple [1,2,1]/4 lowpass filter (source_c/low121.c)");
+
+  low121.def(
+      "filter", &low121_filter_binding, py::arg("series"), py::arg("iterations") = 1,
+      "Apply the [1,2,1]/4 lowpass filter to `series` `iterations` times, "
+      "returning a new 1D array of the same length.");
+
+  auto histogram = m.def_submodule(
+      "histogram", "Data histogram over a rescaled [0,1) range (source_c/histogram.c)");
+
+  py::class_<HistogramWrapper>(histogram, "Histogram")
+      .def_property_readonly("base", &HistogramWrapper::base)
+      .def_property_readonly("min", &HistogramWrapper::min,
+			      "Minimum of the raw (un-rescaled) series")
+      .def_property_readonly("interval", &HistogramWrapper::interval,
+			      "max - min of the raw series")
+      .def_property_readonly("average", &HistogramWrapper::average)
+      .def_property_readonly("var", &HistogramWrapper::var,
+			      "Standard deviation of the raw series")
+      .def_property_readonly("box", &HistogramWrapper::box,
+			      "Bin counts, shape (base,)");
+
+  histogram.def(
+      "compute", &histogram_compute_binding, py::arg("series"), py::arg("base") = 50,
+      "Bin `series` into `base` equal-width intervals over its own "
+      "[min,max] range, the same way the histogram CLI does it.");
+
+  auto polypar = m.def_submodule(
+      "polypar", "Polynomial exponent enumeration (source_c/polypar.c)");
+
+  py::class_<PolyParResultWrapper>(polypar, "PolyParResult")
+      .def_property_readonly("dim", &PolyParResultWrapper::dim)
+      .def_property_readonly("order", &PolyParResultWrapper::order)
+      .def_property_readonly("count", &PolyParResultWrapper::count)
+      .def_property_readonly("params", &PolyParResultWrapper::params,
+			      "Exponent combinations, shape (count, dim)");
+
+  polypar.def(
+      "generate", &generate, py::arg("dim") = 2, py::arg("order") = 3,
+      "Enumerate every combination of `dim` non-negative integer exponents "
+      "that sum to at most `order`.");
+
+  auto corr = m.def_submodule(
+      "corr", "Autocorrelation estimation (source_c/corr.c)");
+
+  py::class_<CorrResultWrapper>(corr, "CorrResult")
+      .def_property_readonly("length", &CorrResultWrapper::length)
+      .def_property_readonly("tau", &CorrResultWrapper::tau,
+			      "Maximum lag actually computed")
+      .def_property_readonly("average", &CorrResultWrapper::average,
+			      "Mean of the raw (un-centered) series")
+      .def_property_readonly("stddev", &CorrResultWrapper::stddev,
+			      "Standard deviation of the raw series")
+      .def_property_readonly("values", &CorrResultWrapper::values,
+			      "Correlation values for lags 0..tau, shape (tau+1,)");
+
+  corr.def(
+      "compute", &corr_compute_binding, py::arg("series"), py::arg("tau") = 100,
+      py::arg("normalize") = true,
+      "Estimate the autocorrelation of `series` for lags 0..tau (tau is\n"
+      "clamped to len(series)-1 if too large). If normalize is True\n"
+      "(default), the series is centered by its own mean and each lag is\n"
+      "divided by the variance; if False, the raw series is used\n"
+      "unscaled, matching the CLI's -n flag.");
 }
