@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/corr.h"
 
 #define WID_STR "Estimates the autocorrelations of a data set"
 
@@ -32,7 +33,6 @@ unsigned int column=1;
 unsigned int verbosity=0xff;
 unsigned long tau=100,length=ULONG_MAX,exclude=0;
 double *array;
-double av,var;
 char *infile=NULL;
 
 void show_options(char *progname) 
@@ -83,23 +83,13 @@ void scan_options(int argc,char **argv)
   }
 }
 
-double corr(long i)
-{
-  long j;
-  double c=0.0;
-  
-  for (j=0;j<(length-i);j++)
-    c += array[j]*array[j+i];
-
-  return c/(length-i);
-}
-
 int main(int argc,char** argv)
 {
   char stdi=0;
   long i;
   FILE *fout=NULL;
-  
+  CorrResult *result;
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
   
@@ -129,41 +119,33 @@ int main(int argc,char** argv)
 
   array=(double*)get_series(infile,&length,exclude,column,verbosity);
 
-  if (tau >= length)
-    tau=length-1;
-
-  variance(array,length,&av,&var);
-
-  if (normalize) {
-    for (i=0;i<length;i++)
-      array[i] -= av;
+  result=corr_compute(array,length,tau,normalize);
+  if (result == NULL) {
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
   }
 
   if (!stout) {
     fout=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
-    fprintf(fout,"# average=%e\n",av);
-    fprintf(fout,"# standard deviation=%e\n",var);
+    fprintf(fout,"# average=%e\n",result->average);
+    fprintf(fout,"# standard deviation=%e\n",result->stddev);
   }
   else {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
-    fprintf(stdout,"# average=%e\n",av);
-    fprintf(stdout,"# standard deviation=%e\n",var);
+    fprintf(stdout,"# average=%e\n",result->average);
+    fprintf(stdout,"# standard deviation=%e\n",result->stddev);
   }
-  if (normalize)
-    var *= var;
-  else
-    var=1.0;
 
-  for (i=0;i<=tau;i++)
+  for (i=0;i<=result->tau;i++)
     if (!stout) {
-      fprintf(fout,"%ld %e\n",i,corr(i)/var);
+      fprintf(fout,"%ld %e\n",i,result->values[i]);
       fflush(fout);
     }
     else {
-      fprintf(stdout,"%ld %e\n",i,corr(i)/var);
+      fprintf(stdout,"%ld %e\n",i,result->values[i]);
       fflush(stdout);
     }
   if (!stout)
@@ -174,6 +156,7 @@ int main(int argc,char** argv)
   if (infile != NULL)
     free(infile);
   free(array);
+  corr_free(result);
 
   return 0;
 }

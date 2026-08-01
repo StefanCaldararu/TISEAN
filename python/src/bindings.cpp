@@ -13,6 +13,7 @@
 #include "low121.h"
 #include "histogram.h"
 #include "polypar.h"
+#include "corr.h"
 
 namespace py = pybind11;
 
@@ -190,6 +191,47 @@ std::unique_ptr<PolyParResultWrapper> generate(unsigned int dim, unsigned int or
   return std::make_unique<PolyParResultWrapper>(result);
 }
 
+// Owns a CorrResult* and exposes its fields as numpy arrays. Not copyable
+// since CorrResult doesn't support that; pybind11 holds it by unique_ptr.
+class CorrResultWrapper {
+public:
+  explicit CorrResultWrapper(CorrResult *result) : result_(result) {}
+  CorrResultWrapper(const CorrResultWrapper &) = delete;
+  CorrResultWrapper &operator=(const CorrResultWrapper &) = delete;
+  ~CorrResultWrapper() { corr_free(result_); }
+
+  unsigned long length() const { return result_->length; }
+  unsigned long tau() const { return result_->tau; }
+  double average() const { return result_->average; }
+  double stddev() const { return result_->stddev; }
+
+  py::array_t<double> values() const {
+    py::array_t<double> out((py::ssize_t)(result_->tau + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i <= result_->tau; i++)
+      buf(i) = result_->values[i];
+    return out;
+  }
+
+private:
+  CorrResult *result_;
+};
+
+std::unique_ptr<CorrResultWrapper>
+corr_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned long tau, bool normalize)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  CorrResult *result = corr_compute(series.data(), length, tau, normalize ? 1 : 0);
+  if (result == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<CorrResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -262,4 +304,27 @@ PYBIND11_MODULE(_tisean, m)
       "generate", &generate, py::arg("dim") = 2, py::arg("order") = 3,
       "Enumerate every combination of `dim` non-negative integer exponents "
       "that sum to at most `order`.");
+
+  auto corr = m.def_submodule(
+      "corr", "Autocorrelation estimation (source_c/corr.c)");
+
+  py::class_<CorrResultWrapper>(corr, "CorrResult")
+      .def_property_readonly("length", &CorrResultWrapper::length)
+      .def_property_readonly("tau", &CorrResultWrapper::tau,
+			      "Maximum lag actually computed")
+      .def_property_readonly("average", &CorrResultWrapper::average,
+			      "Mean of the raw (un-centered) series")
+      .def_property_readonly("stddev", &CorrResultWrapper::stddev,
+			      "Standard deviation of the raw series")
+      .def_property_readonly("values", &CorrResultWrapper::values,
+			      "Correlation values for lags 0..tau, shape (tau+1,)");
+
+  corr.def(
+      "compute", &corr_compute_binding, py::arg("series"), py::arg("tau") = 100,
+      py::arg("normalize") = true,
+      "Estimate the autocorrelation of `series` for lags 0..tau (tau is\n"
+      "clamped to len(series)-1 if too large). If normalize is True\n"
+      "(default), the series is centered by its own mean and each lag is\n"
+      "divided by the variance; if False, the raw series is used\n"
+      "unscaled, matching the CLI's -n flag.");
 }
