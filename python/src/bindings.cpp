@@ -16,6 +16,7 @@
 #include "corr.h"
 #include "xcor.h"
 #include "av-d2.h"
+#include "mutual.h"
 
 namespace py = pybind11;
 
@@ -329,6 +330,51 @@ av_d2_average_binding(py::array_t<double, py::array::c_style | py::array::forcec
   return std::make_unique<AvD2ResultWrapper>(result);
 }
 
+// Owns a MutualResult* and exposes its fields as numpy arrays. Not copyable
+// since MutualResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class MutualResultWrapper {
+public:
+  explicit MutualResultWrapper(MutualResult *result) : result_(result) {}
+  MutualResultWrapper(const MutualResultWrapper &) = delete;
+  MutualResultWrapper &operator=(const MutualResultWrapper &) = delete;
+  ~MutualResultWrapper() { mutual_free(result_); }
+
+  unsigned long length() const { return result_->length; }
+  long partitions() const { return result_->partitions; }
+  long corrlength() const { return result_->corrlength; }
+
+  py::array_t<double> values() const {
+    py::array_t<double> out((py::ssize_t)(result_->corrlength + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (long i = 0; i <= result_->corrlength; i++)
+      buf(i) = result_->values[i];
+    return out;
+  }
+
+private:
+  MutualResult *result_;
+};
+
+std::unique_ptr<MutualResultWrapper>
+mutual_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			long partitions, long corrlength)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (partitions < 1)
+    throw std::invalid_argument("partitions must be >= 1");
+  if (corrlength < 0)
+    throw std::invalid_argument("corrlength must be >= 0");
+
+  auto length = (unsigned long)series.shape(0);
+  MutualResult *result = mutual_compute(series.data(), length, partitions, corrlength);
+  if (result == nullptr)
+    throw std::invalid_argument("series must be non-empty and non-constant");
+
+  return std::make_unique<MutualResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -470,4 +516,28 @@ PYBIND11_MODULE(_tisean, m)
       "window, matching av-d2.c's main() (the CLI's -a option, default 1).\n"
       "The first and last `aver` points are dropped since they can't be\n"
       "centered within the array.");
+
+  auto mutual = m.def_submodule(
+      "mutual", "Time-delayed mutual information estimation (source_c/mutual.c)");
+
+  py::class_<MutualResultWrapper>(mutual, "MutualResult")
+      .def_property_readonly("length", &MutualResultWrapper::length)
+      .def_property_readonly("partitions", &MutualResultWrapper::partitions,
+			      "Number of histogram bins per dimension")
+      .def_property_readonly("corrlength", &MutualResultWrapper::corrlength,
+			      "Maximum lag actually computed")
+      .def_property_readonly("values", &MutualResultWrapper::values,
+			      "Conditional-entropy estimate of the mutual "
+			      "information for lags 0..corrlength, shape "
+			      "(corrlength+1,)");
+
+  mutual.def(
+      "compute", &mutual_compute_binding, py::arg("series"), py::arg("partitions") = 16,
+      py::arg("corrlength") = 20,
+      "Estimate the time-delayed mutual information of `series` by binning "
+      "it (rescaled to its own [min,max] range) into `partitions` "
+      "equal-width boxes and computing the conditional entropy against its "
+      "own lag-t copy for each t in 0..corrlength (corrlength is clamped "
+      "to len(series)-1 if too large), matching the mutual CLI's default "
+      "-b/-D options.");
 }

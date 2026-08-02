@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/mutual.h"
 
 #define WID_STR "Estimates the time delayed mutual information\n\t\
 of the data set"
@@ -35,7 +36,6 @@ unsigned long length=ULONG_MAX,exclude=0;
 unsigned int column=1;
 unsigned int verbosity=0xff;
 long partitions=16,corrlength=20;
-long *array,*h1,*h11,**h2;
 
 void show_options(char *progname)
 {
@@ -84,53 +84,16 @@ void scan_options(int n,char** in)
   }
 }
 
-double make_cond_entropy(long t)
-{
-  long i,j,hi,hii,count=0;
-  double hpi,hpj,pij,cond_ent=0.0,norm;
-
-  for (i=0;i<partitions;i++) {
-    h1[i]=h11[i]=0;
-    for (j=0;j<partitions;j++)
-      h2[i][j]=0;
-  }
-  for (i=0;i<length;i++)
-    if (i >= t) {
-      hii=array[i];
-      hi=array[i-t];
-      h1[hi]++;
-      h11[hii]++;
-      h2[hi][hii]++;
-      count++;
-    }
-
-  norm=1.0/(double)count;
-  cond_ent=0.0;
-
-  for (i=0;i<partitions;i++) {
-    hpi=(double)(h1[i])*norm;
-    if (hpi > 0.0) {
-      for (j=0;j<partitions;j++) {
-	hpj=(double)(h11[j])*norm;
-	if (hpj > 0.0) {
-	  pij=(double)h2[i][j]*norm;
-	  if (pij > 0.0)
-	    cond_ent += pij*log(pij/hpj/hpi);
-	}
-      }
-    }
-  }
-
-  return cond_ent;
-}
-
 int main(int argc,char** argv)
 {
   char stdi=0;
-  long tau,i;
-  double *series,min,interval,shannon;
+  long tau;
+  double *series,min,interval;
+  unsigned long i;
   FILE *file;
-  
+  MutualResult *result;
+
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
   
@@ -159,33 +122,29 @@ int main(int argc,char** argv)
     test_outfile(file_out);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  rescale_data(series,length,&min,&interval);
 
-  check_alloc(h1=(long *)malloc(sizeof(long)*partitions));
-  check_alloc(h11=(long *)malloc(sizeof(long)*partitions));
-  check_alloc(h2=(long **)malloc(sizeof(long *)*partitions));
-  for (i=0;i<partitions;i++) 
-    check_alloc(h2[i]=(long *)malloc(sizeof(long)*partitions));
-  check_alloc(array=(long *)malloc(sizeof(long)*length));
-  for (i=0;i<length;i++)
-    if (series[i] < 1.0)
-      array[i]=(long)(series[i]*(double)partitions);
-    else
-      array[i]=partitions-1;
+  result=mutual_compute(series,length,partitions,corrlength);
+  if (result == NULL) {
+    min=interval=series[0];
+    for (i=1;i<length;i++) {
+      if (series[i] < min) min=series[i];
+      if (series[i] > interval) interval=series[i];
+    }
+    interval -= min;
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",min,min+interval);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
+  }
   free(series);
-
-  shannon=make_cond_entropy(0);
-  if (corrlength >= length)
-    corrlength=length-1;
 
   if (!stout) {
     file=fopen(file_out,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",file_out);
-    fprintf(file,"#shannon= %e\n",shannon);
-    fprintf(file,"%d %e\n",0,shannon);
-    for (tau=1;tau<=corrlength;tau++) {
-      fprintf(file,"%ld %e\n",tau,make_cond_entropy(tau));
+    fprintf(file,"#shannon= %e\n",result->values[0]);
+    fprintf(file,"%d %e\n",0,result->values[0]);
+    for (tau=1;tau<=result->corrlength;tau++) {
+      fprintf(file,"%ld %e\n",tau,result->values[tau]);
       fflush(file);
     }
     fclose(file);
@@ -193,13 +152,15 @@ int main(int argc,char** argv)
   else {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
-    fprintf(stdout,"#shannon= %e\n",shannon);
-    fprintf(stdout,"%d %e\n",0,shannon);
-    for (tau=1;tau<=corrlength;tau++) {
-      fprintf(stdout,"%ld %e\n",tau,make_cond_entropy(tau));
+    fprintf(stdout,"#shannon= %e\n",result->values[0]);
+    fprintf(stdout,"%d %e\n",0,result->values[0]);
+    for (tau=1;tau<=result->corrlength;tau++) {
+      fprintf(stdout,"%ld %e\n",tau,result->values[tau]);
       fflush(stdout);
     }
   }
+
+  mutual_free(result);
 
   return 0;
 }

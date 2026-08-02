@@ -10,8 +10,8 @@ find_package(pybind11 CONFIG REQUIRED)
 # Repo root: python/ is directly under it.
 set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-# Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2 need.
-# Other routines get added here as they get their own reentrant API
+# Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2/mutual
+# need. Other routines get added here as they get their own reentrant API
 # extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
@@ -22,6 +22,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/corr_api.c
   ${TISEAN_ROOT}/source_c/api/xcor_api.c
   ${TISEAN_ROOT}/source_c/api/av-d2_api.c
+  ${TISEAN_ROOT}/source_c/api/mutual_api.c
   ${TISEAN_ROOT}/source_c/routines/check_alloc.c
   ${TISEAN_ROOT}/source_c/routines/variance.c
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c
