@@ -15,6 +15,7 @@
 #include "polypar.h"
 #include "corr.h"
 #include "xcor.h"
+#include "av-d2.h"
 
 namespace py = pybind11;
 
@@ -279,6 +280,55 @@ xcor_compute_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<XcorResultWrapper>(result);
 }
 
+// Owns an AvD2Result* and exposes its fields as numpy arrays. Not copyable
+// since AvD2Result doesn't support that; pybind11 holds it by unique_ptr.
+class AvD2ResultWrapper {
+public:
+  explicit AvD2ResultWrapper(AvD2Result *result) : result_(result) {}
+  AvD2ResultWrapper(const AvD2ResultWrapper &) = delete;
+  AvD2ResultWrapper &operator=(const AvD2ResultWrapper &) = delete;
+  ~AvD2ResultWrapper() { av_d2_free(result_); }
+
+  unsigned long n_points() const { return result_->n_points; }
+
+  py::array_t<double> avg_eps() const {
+    py::array_t<double> out((py::ssize_t)result_->n_points);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_points; i++)
+      buf(i) = result_->avg_eps[i];
+    return out;
+  }
+
+  py::array_t<double> avg_y() const {
+    py::array_t<double> out((py::ssize_t)result_->n_points);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_points; i++)
+      buf(i) = result_->avg_y[i];
+    return out;
+  }
+
+private:
+  AvD2Result *result_;
+};
+
+std::unique_ptr<AvD2ResultWrapper>
+av_d2_average_binding(py::array_t<double, py::array::c_style | py::array::forcecast> eps,
+		       py::array_t<double, py::array::c_style | py::array::forcecast> y,
+		       int aver)
+{
+  if (eps.ndim() != 1 || y.ndim() != 1)
+    throw std::invalid_argument("eps and y must be 1D arrays");
+  if (eps.shape(0) != y.shape(0))
+    throw std::invalid_argument("eps and y must have the same length");
+
+  auto howmany = (unsigned long)eps.shape(0);
+  AvD2Result *result = av_d2_average(eps.data(), y.data(), howmany, aver);
+  if (result == nullptr)
+    throw std::invalid_argument("aver must be >= 0");
+
+  return std::make_unique<AvD2ResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -402,4 +452,22 @@ PYBIND11_MODULE(_tisean, m)
       "negative). Both series are centered by their own mean and each lag\n"
       "is divided by both series' standard deviations, matching xcor.c's\n"
       "main().");
+
+  auto av_d2 = m.def_submodule(
+      "av_d2", "Centered moving-average smoothing of d2 program output (source_c/av-d2.c)");
+
+  py::class_<AvD2ResultWrapper>(av_d2, "AvD2Result")
+      .def_property_readonly("n_points", &AvD2ResultWrapper::n_points)
+      .def_property_readonly("avg_eps", &AvD2ResultWrapper::avg_eps,
+			      "Window-averaged eps values, shape (n_points,)")
+      .def_property_readonly("avg_y", &AvD2ResultWrapper::avg_y,
+			      "Window-averaged y values, shape (n_points,)");
+
+  av_d2.def(
+      "average", &av_d2_average_binding, py::arg("eps"), py::arg("y"), py::arg("aver") = 1,
+      "Smooth `eps`/`y` pairs from one dimension-block of a d2 program\n"
+      "output file with a centered moving average over a (2*aver+1)-point\n"
+      "window, matching av-d2.c's main() (the CLI's -a option, default 1).\n"
+      "The first and last `aver` points are dropped since they can't be\n"
+      "centered within the array.");
 }
