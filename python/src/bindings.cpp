@@ -17,6 +17,7 @@
 #include "xcor.h"
 #include "av-d2.h"
 #include "mutual.h"
+#include "extrema.h"
 
 namespace py = pybind11;
 
@@ -375,6 +376,62 @@ mutual_compute_binding(py::array_t<double, py::array::c_style | py::array::force
   return std::make_unique<MutualResultWrapper>(result);
 }
 
+// Owns an ExtremaResult* and exposes its fields as numpy arrays. Not
+// copyable since ExtremaResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class ExtremaResultWrapper {
+public:
+  explicit ExtremaResultWrapper(ExtremaResult *result) : result_(result) {}
+  ExtremaResultWrapper(const ExtremaResultWrapper &) = delete;
+  ExtremaResultWrapper &operator=(const ExtremaResultWrapper &) = delete;
+  ~ExtremaResultWrapper() { extrema_free(result_); }
+
+  unsigned long count() const { return result_->count; }
+  unsigned int dim() const { return result_->dim; }
+
+  py::array_t<double> point() const {
+    py::array_t<double> out({(py::ssize_t)result_->count, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->point[i * result_->dim + j];
+    return out;
+  }
+
+  py::array_t<double> dt() const {
+    py::array_t<double> out((py::ssize_t)result_->count);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      buf(i) = result_->dt[i];
+    return out;
+  }
+
+private:
+  ExtremaResult *result_;
+};
+
+std::unique_ptr<ExtremaResultWrapper>
+extrema_find_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		       unsigned int which, bool maxima, double mintime)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  ExtremaResult *result = extrema_find(rows.data(), length, dim, which,
+					 maxima ? 1 : 0, mintime);
+  if (result == nullptr)
+    throw std::invalid_argument("which must be < series.shape[0]");
+
+  return std::make_unique<ExtremaResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -540,4 +597,27 @@ PYBIND11_MODULE(_tisean, m)
       "own lag-t copy for each t in 0..corrlength (corrlength is clamped "
       "to len(series)-1 if too large), matching the mutual CLI's default "
       "-b/-D options.");
+
+  auto extrema = m.def_submodule(
+      "extrema", "Local maxima/minima detection via parabola fit (source_c/extrema.c)");
+
+  py::class_<ExtremaResultWrapper>(extrema, "ExtremaResult")
+      .def_property_readonly("count", &ExtremaResultWrapper::count)
+      .def_property_readonly("dim", &ExtremaResultWrapper::dim)
+      .def_property_readonly("point", &ExtremaResultWrapper::point,
+			      "Interpolated series values at each extremum, "
+			      "shape (count, dim)")
+      .def_property_readonly("dt", &ExtremaResultWrapper::dt,
+			      "Time since the previous extremum, shape (count,)");
+
+  extrema.def(
+      "find", &extrema_find_binding, py::arg("series"), py::arg("which") = 0,
+      py::arg("maxima") = true, py::arg("mintime") = 0.0,
+      "Find local maxima (or minima if maxima=False) of component `which`\n"
+      "(0-based; the CLI's -w is 1-based and defaults to its first "
+      "component, i.e. which=0 here) of `series` (shape (dim, length)) by\n"
+      "fitting a parabola through each candidate triple of points, "
+      "matching the extrema CLI's -w/-z/-t options. For every extremum "
+      "found, every component of series is interpolated at the extremum's "
+      "fractional time via the same parabola fit.");
 }
