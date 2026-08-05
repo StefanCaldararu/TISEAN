@@ -451,8 +451,11 @@ public:
     auto buf = out.mutable_unchecked<1>();
     for (unsigned int i = 0; i < result_->steps; i++)
       buf(i) = result_->error[i];
-    
-      XZeroResult *result_;
+    return out;
+  }
+
+private:
+  XZeroResult *result_;
 };
 
 std::unique_ptr<XZeroResultWrapper>
@@ -481,6 +484,8 @@ xzero_forecast_binding(py::array_t<double, py::array::c_style | py::array::force
     throw std::invalid_argument("series1 and series2 must be non-empty and non-constant");
 
   return std::make_unique<XZeroResultWrapper>(result);
+}
+
 // Owns a RecurrResult* and exposes its fields as numpy arrays. Not copyable
 // since RecurrResult doesn't support that; pybind11 holds it by
 // unique_ptr.
