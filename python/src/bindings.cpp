@@ -21,6 +21,7 @@
 #include "xzero.h"
 #include "recurr.h"
 #include "mem_spec.h"
+#include "lyap_r.h"
 
 namespace py = pybind11;
 
@@ -594,6 +595,65 @@ mem_spec_fit_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<MemSpecModelWrapper>(model);
 }
 
+// Owns a LyapR* and exposes its fields as numpy arrays. Not copyable since
+// LyapR doesn't support that; pybind11 holds it by unique_ptr.
+class LyapRWrapper {
+public:
+  explicit LyapRWrapper(LyapR *result) : result_(result) {}
+  LyapRWrapper(const LyapRWrapper &) = delete;
+  LyapRWrapper &operator=(const LyapRWrapper &) = delete;
+  ~LyapRWrapper() { lyap_r_free(result_); }
+
+  unsigned int steps() const { return result_->steps; }
+
+  py::array_t<long> found() const {
+    py::array_t<long> out((py::ssize_t)(result_->steps + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i <= result_->steps; i++)
+      buf(i) = result_->found[i];
+    return out;
+  }
+
+  py::array_t<double> lyap() const {
+    py::array_t<double> out((py::ssize_t)(result_->steps + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i <= result_->steps; i++)
+      buf(i) = result_->lyap[i];
+    return out;
+  }
+
+private:
+  LyapR *result_;
+};
+
+std::unique_ptr<LyapRWrapper>
+lyap_r_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			unsigned int dim, unsigned int delay, unsigned int mindist,
+			unsigned int steps, double eps0, bool epsset)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length == 0)
+    throw std::invalid_argument("series must be non-empty");
+
+  unsigned long del = (unsigned long)delay * (dim - 1);
+  if (del + steps >= length)
+    throw std::invalid_argument(
+	"series too short for the given dim/delay/steps (length must be "
+	"> delay*(dim-1)+steps)");
+
+  LyapR *result = lyap_r_compute(series.data(), length, dim, delay, mindist, steps,
+				  eps0, epsset ? 1 : 0, nullptr, nullptr);
+  if (result == nullptr)
+    throw std::invalid_argument("series must be non-constant");
+
+  return std::make_unique<LyapRWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -861,4 +921,33 @@ PYBIND11_MODULE(_tisean, m)
       "matching the mem_spec CLI's -p option (default 128). series is "
       "mean-centered internally the same way the CLI does it before "
       "fitting; the input array itself is not modified.");
+
+  auto lyap_r = m.def_submodule(
+      "lyap_r", "Maximal Lyapunov exponent via Rosenstein et al. (source_c/lyap_r.c)");
+
+  py::class_<LyapRWrapper>(lyap_r, "LyapRResult")
+      .def_property_readonly("steps", &LyapRWrapper::steps)
+      .def_property_readonly("found", &LyapRWrapper::found,
+			      "Number of point pairs contributing to lyap[i] "
+			      "for each step, shape (steps+1,); 0 means no "
+			      "data for that step")
+      .def_property_readonly("lyap", &LyapRWrapper::lyap,
+			      "Raw sum of log(squared divergence) for each "
+			      "step, shape (steps+1,); divide by found[i] "
+			      "and 2.0 to get the CLI's printed value "
+			      "wherever found[i] > 0");
+
+  lyap_r.def(
+      "compute", &lyap_r_compute_binding, py::arg("series"), py::arg("dim") = 2,
+      py::arg("delay") = 1, py::arg("mindist") = 0, py::arg("steps") = 10,
+      py::arg("eps0") = 1.e-3, py::arg("epsset") = false,
+      "Estimate the maximal Lyapunov exponent of `series` via the method "
+      "of Rosenstein et al., matching the lyap_r CLI's -m/-d/-t/-s/-r "
+      "options. series is rescaled to [0,1) internally (the input array "
+      "is not modified); a box-assisted nearest-neighbor search at a "
+      "growing radius (starting at eps0, in rescaled [0,1) units unless "
+      "epsset=True, in which case eps0 is interpreted in the same units "
+      "as the raw input data and divided by its own data range, matching "
+      "the CLI's -r flag) accumulates the log divergence of nearby "
+      "trajectories for `steps` iteration steps ahead.");
 }
