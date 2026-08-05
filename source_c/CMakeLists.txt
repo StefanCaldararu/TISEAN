@@ -1,7 +1,7 @@
 add_subdirectory(routines)
 
 set(TISEAN_C_PROGRAMS
-  poincare extrema rescale recurr false_nearest
+  poincare rescale recurr false_nearest
   lyap_r lyap_k lyap_spec d2 makenoise nrlazy
   lzo-test lfo-run lfo-test rbf polynom polyback polynomp
   mem_spec pca ghkss lfo-ar xzero boxcount fsle
@@ -15,9 +15,9 @@ foreach(prog ${TISEAN_C_PROGRAMS})
   install(TARGETS ${prog} RUNTIME DESTINATION bin)
 endforeach()
 
-# ar-model, low121, histogram, polypar, corr, xcor, av-d2 and mutual use
-# the reentrant APIs in api/ (also used by the Python bindings under
-# python/) instead of duplicating the math inline.
+# ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual and
+# extrema use the reentrant APIs in api/ (also used by the Python bindings
+# under python/) instead of duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
@@ -49,3 +49,7 @@ install(TARGETS av-d2 RUNTIME DESTINATION bin)
 add_executable(mutual mutual.c api/mutual_api.c)
 target_link_libraries(mutual PRIVATE ddtsa)
 install(TARGETS mutual RUNTIME DESTINATION bin)
+
+add_executable(extrema extrema.c api/extrema_api.c)
+target_link_libraries(extrema PRIVATE ddtsa)
+install(TARGETS extrema RUNTIME DESTINATION bin)
