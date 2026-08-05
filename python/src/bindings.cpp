@@ -20,6 +20,7 @@
 #include "extrema.h"
 #include "xzero.h"
 #include "recurr.h"
+#include "mem_spec.h"
 
 namespace py = pybind11;
 
@@ -544,6 +545,55 @@ recurr_find_binding(py::array_t<double, py::array::c_style | py::array::forcecas
   return std::make_unique<RecurrResultWrapper>(result);
 }
 
+// Owns a MemSpecModel* and exposes its fields as numpy arrays. Not
+// copyable since MemSpecModel doesn't support that; pybind11 holds it by
+// unique_ptr.
+class MemSpecModelWrapper {
+public:
+  explicit MemSpecModelWrapper(MemSpecModel *model) : model_(model) {}
+  MemSpecModelWrapper(const MemSpecModelWrapper &) = delete;
+  MemSpecModelWrapper &operator=(const MemSpecModelWrapper &) = delete;
+  ~MemSpecModelWrapper() { mem_spec_free(model_); }
+
+  unsigned long poles() const { return model_->poles; }
+  double sigma2() const { return model_->sigma2; }
+
+  py::array_t<double> coef() const {
+    py::array_t<double> out((py::ssize_t)model_->poles);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < model_->poles; i++)
+      buf(i) = model_->coef[i];
+    return out;
+  }
+
+  std::pair<py::array_t<double>, py::array_t<double>>
+  spectrum(unsigned long out, double samplingrate) const {
+    py::array_t<double> freq((py::ssize_t)out), spec((py::ssize_t)out);
+    mem_spec_spectrum(model_, out, samplingrate, freq.mutable_data(), spec.mutable_data());
+    return {freq, spec};
+  }
+
+private:
+  MemSpecModel *model_;
+};
+
+std::unique_ptr<MemSpecModelWrapper>
+mem_spec_fit_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned long poles)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  MemSpecModel *model = mem_spec_fit(series.data(), length, poles);
+  if (model == nullptr)
+    throw std::invalid_argument(
+	"poles must be < len(series), and series must not be constant "
+	"(zero variance)");
+
+  return std::make_unique<MemSpecModelWrapper>(model);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -786,4 +836,29 @@ PYBIND11_MODULE(_tisean, m)
       "and `delay` match the CLI's -m (embedding dimension part) and -d; "
       "`fraction` matches the CLI's -% (as a 0..1 fraction rather than a "
       "percentage).");
+
+  auto mem_spec = m.def_submodule(
+      "mem_spec", "AR power spectrum estimation via Burg's method (source_c/mem_spec.c)");
+
+  py::class_<MemSpecModelWrapper>(mem_spec, "MemSpecModel")
+      .def_property_readonly("poles", &MemSpecModelWrapper::poles)
+      .def_property_readonly("sigma2", &MemSpecModelWrapper::sigma2,
+			      "Residual variance of the Burg fit")
+      .def_property_readonly("coef", &MemSpecModelWrapper::coef,
+			      "AR (reflection) coefficients, shape (poles,)")
+      .def("spectrum", &MemSpecModelWrapper::spectrum, py::arg("out") = 2000,
+	   py::arg("samplingrate") = 1.0,
+	   "Evaluate the power spectrum implied by this model at `out`\n"
+	   "frequencies spaced over [0, samplingrate/2), matching the "
+	   "mem_spec CLI's -P/-f options. Returns a (freq, spec) tuple of "
+	   "1D arrays, each of length `out`. spec is unscaled, matching "
+	   "what the CLI prints to stdout; the CLI additionally divides by "
+	   "sqrt(len(series)) only when writing to a file with -o.");
+
+  mem_spec.def(
+      "fit", &mem_spec_fit_binding, py::arg("series"), py::arg("poles") = 128,
+      "Fit an AR power-spectrum model to `series` via Burg's method, "
+      "matching the mem_spec CLI's -p option (default 128). series is "
+      "mean-centered internally the same way the CLI does it before "
+      "fitting; the input array itself is not modified.");
 }
