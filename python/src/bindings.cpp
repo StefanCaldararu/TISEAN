@@ -18,6 +18,7 @@
 #include "av-d2.h"
 #include "mutual.h"
 #include "extrema.h"
+#include "recurr.h"
 
 namespace py = pybind11;
 
@@ -432,6 +433,64 @@ extrema_find_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<ExtremaResultWrapper>(result);
 }
 
+// Owns a RecurrResult* and exposes its fields as numpy arrays. Not copyable
+// since RecurrResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class RecurrResultWrapper {
+public:
+  explicit RecurrResultWrapper(RecurrResult *result) : result_(result) {}
+  RecurrResultWrapper(const RecurrResultWrapper &) = delete;
+  RecurrResultWrapper &operator=(const RecurrResultWrapper &) = delete;
+  ~RecurrResultWrapper() { recurr_free(result_); }
+
+  unsigned long count() const { return result_->count; }
+
+  py::array_t<long> point() const {
+    py::array_t<long> out((py::ssize_t)result_->count);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      buf(i) = result_->point[i];
+    return out;
+  }
+
+  py::array_t<long> neighbor() const {
+    py::array_t<long> out((py::ssize_t)result_->count);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      buf(i) = result_->neighbor[i];
+    return out;
+  }
+
+private:
+  RecurrResult *result_;
+};
+
+std::unique_ptr<RecurrResultWrapper>
+recurr_find_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		     unsigned int embed, unsigned int delay, double eps,
+		     bool eps_is_raw, double fraction)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  double bad_value = 0.0;
+  RecurrResult *result = recurr_find(rows.data(), length, dim, embed, delay, eps,
+				      eps_is_raw ? 1 : 0, fraction, &bad_value);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"series must be non-empty and have no constant dimension (a dimension "
+	"ranges from " + std::to_string(bad_value) + " to " + std::to_string(bad_value) + ")");
+
+  return std::make_unique<RecurrResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -620,4 +679,30 @@ PYBIND11_MODULE(_tisean, m)
       "matching the extrema CLI's -w/-z/-t options. For every extremum "
       "found, every component of series is interpolated at the extremum's "
       "fractional time via the same parabola fit.");
+
+  auto recurr = m.def_submodule(
+      "recurr", "Recurrence plot neighbor search (source_c/recurr.c)");
+
+  py::class_<RecurrResultWrapper>(recurr, "RecurrResult")
+      .def_property_readonly("count", &RecurrResultWrapper::count)
+      .def_property_readonly("point", &RecurrResultWrapper::point,
+			      "1-based index of the scanned point, shape (count,)")
+      .def_property_readonly("neighbor", &RecurrResultWrapper::neighbor,
+			      "1-based index of the recurrence neighbor, "
+			      "shape (count,)");
+
+  recurr.def(
+      "find", &recurr_find_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("eps") = 1.e-3,
+      py::arg("eps_is_raw") = false, py::arg("fraction") = 1.0,
+      "Find recurrence-plot neighbor pairs in `series` (shape (dim, "
+      "length)). Each dimension is independently rescaled to [0,1) the "
+      "same way the CLI does it. If eps_is_raw is True, `eps` is "
+      "interpreted in the original (raw) data units and divided by the "
+      "largest per-dimension raw interval before use, matching the CLI's "
+      "-r flag; if False (default), `eps` is used as-is in the "
+      "already-rescaled [0,1) space, matching the CLI's default. `embed` "
+      "and `delay` match the CLI's -m (embedding dimension part) and -d; "
+      "`fraction` matches the CLI's -% (as a 0..1 fraction rather than a "
+      "percentage).");
 }
