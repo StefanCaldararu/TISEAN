@@ -18,6 +18,7 @@
 #include "av-d2.h"
 #include "mutual.h"
 #include "extrema.h"
+#include "xzero.h"
 
 namespace py = pybind11;
 
@@ -432,6 +433,58 @@ extrema_find_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<ExtremaResultWrapper>(result);
 }
 
+// Owns an XZeroResult* and exposes its fields as numpy arrays. Not copyable
+// since XZeroResult doesn't support that; pybind11 holds it by unique_ptr.
+class XZeroResultWrapper {
+public:
+  explicit XZeroResultWrapper(XZeroResult *result) : result_(result) {}
+  XZeroResultWrapper(const XZeroResultWrapper &) = delete;
+  XZeroResultWrapper &operator=(const XZeroResultWrapper &) = delete;
+  ~XZeroResultWrapper() { xzero_free(result_); }
+
+  unsigned int steps() const { return result_->steps; }
+  unsigned long clength() const { return result_->clength; }
+
+  py::array_t<double> error() const {
+    py::array_t<double> out((py::ssize_t)result_->steps);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->steps; i++)
+      buf(i) = result_->error[i];
+    return out;
+  }
+
+private:
+  XZeroResult *result_;
+};
+
+std::unique_ptr<XZeroResultWrapper>
+xzero_forecast_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series1,
+			py::array_t<double, py::array::c_style | py::array::forcecast> series2,
+			unsigned int dim, unsigned int delay, py::object n_ref,
+			int minn, double eps0, double epsf, unsigned int step,
+			bool epsset)
+{
+  if (series1.ndim() != 1 || series2.ndim() != 1)
+    throw std::invalid_argument("series1 and series2 must be 1D arrays");
+  if (series1.shape(0) != series2.shape(0))
+    throw std::invalid_argument("series1 and series2 must have the same length");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  auto length = (unsigned long)series1.shape(0);
+  unsigned long resolved_ref = n_ref.is_none() ? length : n_ref.cast<unsigned long>();
+  unsigned long effective_ref = resolved_ref < length ? resolved_ref : length;
+  if (step > effective_ref)
+    throw std::invalid_argument("step must be <= min(n_ref, len(series1))");
+
+  XZeroResult *result = xzero_forecast(series1.data(), series2.data(), length, dim, delay,
+					resolved_ref, minn, eps0, epsf, step, epsset ? 1 : 0);
+  if (result == nullptr)
+    throw std::invalid_argument("series1 and series2 must be non-empty and non-constant");
+
+  return std::make_unique<XZeroResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -620,4 +673,33 @@ PYBIND11_MODULE(_tisean, m)
       "matching the extrema CLI's -w/-z/-t options. For every extremum "
       "found, every component of series is interpolated at the extremum's "
       "fractional time via the same parabola fit.");
+
+  auto xzero = m.def_submodule(
+      "xzero", "Average cross forecast error of a zeroth-order fit between two series (source_c/xzero.c)");
+
+  py::class_<XZeroResultWrapper>(xzero, "XZeroResult")
+      .def_property_readonly("steps", &XZeroResultWrapper::steps)
+      .def_property_readonly("clength", &XZeroResultWrapper::clength,
+			      "Number of reference points actually scanned")
+      .def_property_readonly("error", &XZeroResultWrapper::error,
+			      "Normalized RMS cross-forecast error for forecast "
+			      "horizons 1..steps, shape (steps,)");
+
+  xzero.def(
+      "forecast", &xzero_forecast_binding, py::arg("series1"), py::arg("series2"),
+      py::arg("dim") = 3, py::arg("delay") = 1, py::arg("n_ref") = py::none(),
+      py::arg("minn") = 30, py::arg("eps0") = 1.e-3, py::arg("epsf") = 1.2,
+      py::arg("step") = 1, py::arg("epsset") = false,
+      "Estimate the average cross forecast error of a zeroth-order fit\n"
+      "between `series1` and `series2` for forecast horizons 1..step,\n"
+      "matching the xzero CLI's -m/-d/-n/-k/-r/-f/-s options. Both series\n"
+      "are independently rescaled to their own [0,1) range before a\n"
+      "box-assisted neighbor search over series1 (growing the search\n"
+      "radius until at least `minn` neighbors are found for a given\n"
+      "reference point). n_ref (the CLI's -n) defaults to len(series1) if\n"
+      "not given (None). eps0 is the starting search radius in rescaled\n"
+      "[0,1) units, unless epsset=True, in which case eps0 is interpreted\n"
+      "in the same units as the raw input data and divided by the average\n"
+      "of series1's/series2's own raw data ranges, matching the CLI's -r\n"
+      "flag.");
 }
