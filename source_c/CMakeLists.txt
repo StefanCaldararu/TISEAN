@@ -4,7 +4,7 @@ set(TISEAN_C_PROGRAMS
   poincare rescale false_nearest
   lyap_r lyap_k lyap_spec d2 makenoise nrlazy
   lzo-test lfo-run lfo-test rbf polynom polyback polynomp
-  mem_spec pca ghkss lfo-ar xzero boxcount fsle
+  mem_spec pca ghkss lfo-ar boxcount fsle
   resample nstat_z sav_gol delay lzo-gm arima-model
   lzo-run ar-run
 )
@@ -16,7 +16,7 @@ foreach(prog ${TISEAN_C_PROGRAMS})
 endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema
-# and recurr use the reentrant APIs in api/ (also used by the Python
+# recurr, and xzero use the reentrant APIs in api/ (also used by the Python
 # bindings under python/) instead of duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
@@ -54,6 +54,9 @@ add_executable(extrema extrema.c api/extrema_api.c)
 target_link_libraries(extrema PRIVATE ddtsa)
 install(TARGETS extrema RUNTIME DESTINATION bin)
 
+add_executable(xzero xzero.c api/xzero_api.c)
+target_link_libraries(xzero PRIVATE ddtsa)
+install(TARGETS xzero RUNTIME DESTINATION bin)
 add_executable(recurr recurr.c api/recurr_api.c)
 target_link_libraries(recurr PRIVATE ddtsa)
 install(TARGETS recurr RUNTIME DESTINATION bin)

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/xzero.h"
 
 #define WID_STR "Estimates the average cross forecast error for a zeroth\n\t\
 order fit between two series given as two columns of one file."
@@ -115,32 +116,19 @@ void scan_options(int n,char **in)
   }
 }
 
-double make_fit(unsigned long act,unsigned long number,unsigned long istep)
-{
-  double casted=0.0;
-  int i;
-  
-  for (i=0;i<number;i++)
-    casted += series1[found[i]+istep];
-  casted /= number;
-
-  return (casted-series2[act+istep])*(casted-series2[act+istep]);
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  char alldone,*done;
-  unsigned long i,j,actfound;
-  unsigned long clength;
+  unsigned long i;
   unsigned int dummy=2;
-  double rms2,av2,*error;
-  double **both,hinter;
+  double **both;
+  double lmin,lmax;
   FILE *file;
+  XZeroResult *result;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -172,66 +160,50 @@ int main(int argc,char **argv)
 				    (char)0,verbosity);
   series1=both[0];
   series2=both[1];
-  rescale_data(series1,LENGTH,&min,&hinter);
-  interval=hinter;
-  rescale_data(series2,LENGTH,&min,&hinter);
-  interval=(interval+hinter)/2.0;
 
-  variance(series2,LENGTH,&av2,&rms2);
-  
-  check_alloc(list=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(found=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(done=(char*)malloc(sizeof(char)*LENGTH));
-  check_alloc(box=(long**)malloc(sizeof(long*)*NMAX));
-  check_alloc(error=(double*)malloc(sizeof(double)*STEP));
-  for (i=0;i<STEP;i++)
-    error[i]=0.0;
-
-  for (i=0;i<NMAX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*NMAX));
-    
-  for (i=0;i<LENGTH;i++)
-    done[i]=0;
-
-  alldone=0;
-  if (epsset)
-    EPS0 /= interval;
-
-  epsilon=EPS0/EPSF;
-  clength=(CLENGTH <= LENGTH) ? CLENGTH-STEP : LENGTH-STEP;
-
-  while (!alldone) {
-    alldone=1;
-    epsilon*=EPSF;
-    make_box(series1,box,list,LENGTH-STEP,NMAX,DIM,DELAY,epsilon);
-    for (i=(DIM-1)*DELAY;i<clength;i++)
-      if (!done[i]) {
-	actfound=find_neighbors(series1,box,list,series2+i,LENGTH,NMAX,
-				DIM,DELAY,epsilon,found);
-	if (actfound >= MINN) {
-	  for (j=1;j<=STEP;j++)
-	    error[j-1] += make_fit(i,actfound,j);
-	  done[i]=1;
-	}
-	alldone &= done[i];
-      }
+  result=xzero_forecast(series1,series2,LENGTH,DIM,DELAY,CLENGTH,MINN,
+			 EPS0,EPSF,(unsigned int)STEP,epsset);
+  if (result == NULL) {
+    lmin=lmax=series1[0];
+    for (i=1;i<LENGTH;i++) {
+      if (series1[i] < lmin) lmin=series1[i];
+      if (series1[i] > lmax) lmax=series1[i];
+    }
+    if (lmax-lmin == 0.0) {
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",lmin,lmin);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    lmin=lmax=series2[0];
+    for (i=1;i<LENGTH;i++) {
+      if (series2[i] < lmin) lmin=series2[i];
+      if (series2[i] > lmax) lmax=series2[i];
+    }
+    if (lmax-lmin == 0.0) {
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",lmin,lmin);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
   }
+
   if (stdo) {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
-    for (i=0;i<STEP;i++)
-      fprintf(stdout,"%lu %e\n",i+1,
-	      sqrt(error[i]/(clength-(DIM-1)*DELAY))/rms2);
+    for (i=0;i<result->steps;i++)
+      fprintf(stdout,"%lu %e\n",i+1,result->error[i]);
   }
   else {
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
-    for (i=0;i<STEP;i++)
-      fprintf(file,"%lu %e\n",i+1,
-	      sqrt(error[i]/(clength-(DIM-1)*DELAY))/rms2);
+    for (i=0;i<result->steps;i++)
+      fprintf(file,"%lu %e\n",i+1,result->error[i]);
     fclose(file);
   }
-  
+
+  xzero_free(result);
+
   return 0;
 }
