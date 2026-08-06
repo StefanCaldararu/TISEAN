@@ -2,7 +2,7 @@ add_subdirectory(routines)
 
 set(TISEAN_C_PROGRAMS
   poincare rescale false_nearest
-  lyap_r lyap_k lyap_spec d2 makenoise nrlazy
+  lyap_k lyap_spec d2 makenoise nrlazy
   lzo-test lfo-run lfo-test rbf polynom polyback polynomp
   pca ghkss lfo-ar boxcount fsle
   resample nstat_z sav_gol delay lzo-gm arima-model
@@ -16,8 +16,9 @@ foreach(prog ${TISEAN_C_PROGRAMS})
 endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema,
-# recurr, xzero, and mem_spec use the reentrant APIs in api/ (also used by
-# the Python bindings under python/) instead of duplicating the math inline.
+# recurr, xzero, mem_spec, and lyap_r use the reentrant APIs in api/ (also
+# used by the Python bindings under python/) instead of duplicating the
+# math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
@@ -64,3 +65,7 @@ install(TARGETS recurr RUNTIME DESTINATION bin)
 add_executable(mem_spec mem_spec.c api/mem_spec_api.c)
 target_link_libraries(mem_spec PRIVATE ddtsa)
 install(TARGETS mem_spec RUNTIME DESTINATION bin)
+
+add_executable(lyap_r lyap_r.c api/lyap_r_api.c)
+target_link_libraries(lyap_r PRIVATE ddtsa)
+install(TARGETS lyap_r RUNTIME DESTINATION bin)
