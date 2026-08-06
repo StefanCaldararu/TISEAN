@@ -22,6 +22,7 @@
 #include "recurr.h"
 #include "mem_spec.h"
 #include "lyap_r.h"
+#include "makenoise.h"
 
 namespace py = pybind11;
 
@@ -654,6 +655,56 @@ lyap_r_compute_binding(py::array_t<double, py::array::c_style | py::array::force
   return std::make_unique<LyapRWrapper>(result);
 }
 
+// Owns a MakeNoise* and exposes its fields as numpy arrays. Not copyable
+// since MakeNoise doesn't support that; pybind11 holds it by unique_ptr.
+class MakeNoiseWrapper {
+public:
+  explicit MakeNoiseWrapper(MakeNoise *noise) : noise_(noise) {}
+  MakeNoiseWrapper(const MakeNoiseWrapper &) = delete;
+  MakeNoiseWrapper &operator=(const MakeNoiseWrapper &) = delete;
+  ~MakeNoiseWrapper() { makenoise_free(noise_); }
+
+  unsigned int dim() const { return noise_->dim; }
+  unsigned long length() const { return noise_->length; }
+
+  py::array_t<double> series() const {
+    py::array_t<double> out({(py::ssize_t)noise_->dim, (py::ssize_t)noise_->length});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < noise_->dim; i++)
+      for (unsigned long j = 0; j < noise_->length; j++)
+	buf(i, j) = noise_->series[i][j];
+    return out;
+  }
+
+private:
+  MakeNoise *noise_;
+};
+
+std::unique_ptr<MakeNoiseWrapper>
+makenoise_add_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		       double noiselevel, bool absolute, bool gaussian, unsigned long seed)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim == 0 || length == 0)
+    throw std::invalid_argument("series must be non-empty");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  MakeNoise *noise = makenoise_add(rows.data(), length, dim, noiselevel,
+				    absolute ? 1 : 0, gaussian ? 1 : 0, seed);
+  if (noise == nullptr)
+    throw std::invalid_argument(
+	"absolute=False requires every row of series to have non-zero variance");
+
+  return std::make_unique<MakeNoiseWrapper>(noise);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -950,4 +1001,25 @@ PYBIND11_MODULE(_tisean, m)
       "as the raw input data and divided by its own data range, matching "
       "the CLI's -r flag) accumulates the log divergence of nearby "
       "trajectories for `steps` iteration steps ahead.");
+
+  auto makenoise = m.def_submodule(
+      "makenoise", "Add uniform or Gaussian noise to a time series (source_c/makenoise.c)");
+
+  py::class_<MakeNoiseWrapper>(makenoise, "MakeNoise")
+      .def_property_readonly("dim", &MakeNoiseWrapper::dim)
+      .def_property_readonly("length", &MakeNoiseWrapper::length)
+      .def_property_readonly("series", &MakeNoiseWrapper::series,
+			      "Noisy series, shape (dim, length)");
+
+  makenoise.def(
+      "add", &makenoise_add_binding, py::arg("series"), py::arg("noiselevel") = 0.05,
+      py::arg("absolute") = false, py::arg("gaussian") = false,
+      py::arg("seed") = 3441341UL,
+      "Add uniform (or, if gaussian=True, Gaussian) noise to `series` "
+      "(shape (dim, length)), matching the makenoise CLI's equidistri()/"
+      "gauss(). noiselevel scales relative to each row's own standard "
+      "deviation unless absolute=True (matching the CLI's -r flag), in "
+      "which case it is used as-is. seed matches the CLI's -I option "
+      "(default 3441341); the RNG is warmed up with 10000 discarded draws "
+      "first, exactly like the CLI.");
 }
