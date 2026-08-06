@@ -5,7 +5,7 @@ set(TISEAN_C_PROGRAMS
   lyap_k lyap_spec d2 nrlazy
   lzo-test lfo-run lfo-test rbf polynom polyback polynomp
   pca ghkss lfo-ar boxcount fsle
-  resample nstat_z sav_gol delay lzo-gm arima-model
+  resample nstat_z delay lzo-gm arima-model
   lzo-run ar-run
 )
 
@@ -16,8 +16,8 @@ foreach(prog ${TISEAN_C_PROGRAMS})
 endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema,
-# recurr, xzero, mem_spec, lyap_r, and makenoise use the reentrant APIs in
-# api/ (also used by the Python bindings under python/) instead of
+# recurr, xzero, mem_spec, lyap_r, makenoise, and sav_gol use the reentrant
+# APIs in api/ (also used by the Python bindings under python/) instead of
 # duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
@@ -73,3 +73,7 @@ install(TARGETS lyap_r RUNTIME DESTINATION bin)
 add_executable(makenoise makenoise.c api/makenoise_api.c)
 target_link_libraries(makenoise PRIVATE ddtsa)
 install(TARGETS makenoise RUNTIME DESTINATION bin)
+
+add_executable(sav_gol sav_gol.c api/sav_gol_api.c)
+target_link_libraries(sav_gol PRIVATE ddtsa)
+install(TARGETS sav_gol RUNTIME DESTINATION bin)
