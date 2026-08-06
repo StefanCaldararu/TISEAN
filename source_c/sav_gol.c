@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/sav_gol.h"
 
 #define WID_STR "Savitzky-Golay filter: Filters the data or estimates\n\t\
 filtered derivatives, respectively."
@@ -94,60 +95,11 @@ void scan_options(int n,char **argv)
   }
 }
 
-double** make_coeff(void)
-{
-  long i,j,k;
-  double **mat,**imat,**rmat;
-  
-  check_alloc(mat=(double**)malloc(sizeof(double*)*(power+1)));
-  for (i=0;i<=power;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*(power+1)));
-  check_alloc(rmat=(double**)malloc(sizeof(double*)*(power+1)));
-  for (i=0;i<=power;i++)
-    check_alloc(rmat[i]=(double*)malloc(sizeof(double)*(nb+nf+1)));
-  
-  for (i=0;i<=power;i++)
-    for (j=0;j<=power;j++) {
-      mat[i][j]=0.0;
-      for (k= -(int)nb;k<=(int)nf;k++)
-	mat[i][j] += pow((double)k,(double)(i+j));
-    }
-
-  imat=invert_matrix(mat,(power+1));
-  
-  for (i=0;i<=power;i++)
-    for (j=0;j<=(nb+nf);j++) {
-      rmat[i][j]=0.0;
-      for (k=0;k<=power;k++)
-	rmat[i][j] += imat[i][k]*pow((double)(j-(int)nb),(double)k);
-    }
-  
-  for (i=0;i<=power;i++) {
-    free(mat[i]);
-    free(imat[i]);
-  }
-  free(mat);
-  free(imat);
-
-  return rmat;
-}
-
-double make_norm(void)
-{
-  double ret=1.0;
-  long i;
-
-  for (i=2;i<=deriv;i++)
-    ret *= (double)i;
-
-  return 1.0/ret;
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  long i,j,d;
-  double **coeff,help,norm;
+  long i,d;
+  SavGol *filtered;
   FILE *fout;
 
   if (scan_help(argc,argv)) 
@@ -195,49 +147,20 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&length,exclude,&dim,
 				      columns,dimset,verbosity);
   
-  coeff=make_coeff();
-  norm=make_norm();
+  filtered=sav_gol_filter((double *const *)series,length,dim,nb,nf,power,deriv);
 
   if (stdo) {
-    for (i=0;i<nb;i++) {
+    for (i=0;i<length;i++) {
       for (d=0;d<dim;d++)
-	fprintf(stdout,"%e ",(deriv==0)?series[d][i]:0.0);
-      fprintf(stdout,"\n");
-    }
-    for (i=(long)nb;i<length-(long)nf;i++) {
-      for (d=0;d<dim;d++) {
-	help=0.0;
-	for (j= -(long)nb;j<=(long)nf;j++)
-	  help += coeff[deriv][j+nb]*series[d][i+j];
-	fprintf(stdout,"%e ",help*norm);
-      }
-      fprintf(stdout,"\n");
-    }
-    for (i=length-(long)nf;i<length;i++) {
-      for (d=0;d<dim;d++)
-	fprintf(stdout,"%e ",(deriv==0)?series[d][i]:0.0);
+	fprintf(stdout,"%e ",filtered->data[d][i]);
       fprintf(stdout,"\n");
     }
   }
   else {
     fout=fopen(outfile,"w");
-    for (i=0;i<nb;i++) {
+    for (i=0;i<length;i++) {
       for (d=0;d<dim;d++)
-	fprintf(fout,"%e ",(deriv==0)?series[d][i]:0.0);
-      fprintf(fout,"\n");
-    }
-    for (i=(long)nb;i<length-(long)nf;i++) {
-      for (d=0;d<dim;d++) {
-	help=0.0;
-	for (j= -(long)nb;j<=(long)nf;j++)
-	  help += coeff[deriv][j+nb]*series[d][i+j];
-	fprintf(fout,"%e ",help*norm);
-      }
-      fprintf(fout,"\n");
-    }
-    for (i=length-(long)nf;i<length;i++) {
-      for (d=0;d<dim;d++)
-	fprintf(fout,"%e ",(deriv==0)?series[d][i]:0.0);
+	fprintf(fout,"%e ",filtered->data[d][i]);
       fprintf(fout,"\n");
     }
     fclose(fout);
@@ -249,9 +172,7 @@ int main(int argc,char **argv)
   free(outfile);
   if (!stdi)
     free(infile);
-  for (i=0;i<=power;i++)
-    free(coeff[i]);
-  free(coeff);
+  sav_gol_free(filtered);
 
   return 0;
 }

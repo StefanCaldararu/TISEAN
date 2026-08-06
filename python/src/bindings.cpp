@@ -23,6 +23,7 @@
 #include "mem_spec.h"
 #include "lyap_r.h"
 #include "makenoise.h"
+#include "sav_gol.h"
 
 namespace py = pybind11;
 
@@ -705,6 +706,55 @@ makenoise_add_binding(py::array_t<double, py::array::c_style | py::array::forcec
   return std::make_unique<MakeNoiseWrapper>(noise);
 }
 
+// Owns a SavGol* and exposes its fields as numpy arrays. Not copyable since
+// SavGol doesn't support that; pybind11 holds it by unique_ptr.
+class SavGolWrapper {
+public:
+  explicit SavGolWrapper(SavGol *result) : result_(result) {}
+  SavGolWrapper(const SavGolWrapper &) = delete;
+  SavGolWrapper &operator=(const SavGolWrapper &) = delete;
+  ~SavGolWrapper() { sav_gol_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned long length() const { return result_->length; }
+
+  py::array_t<double> data() const {
+    py::array_t<double> out({(py::ssize_t)result_->dim, (py::ssize_t)result_->length});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->dim; i++)
+      for (unsigned long j = 0; j < result_->length; j++)
+	buf(i, j) = result_->data[i][j];
+    return out;
+  }
+
+private:
+  SavGol *result_;
+};
+
+std::unique_ptr<SavGolWrapper>
+sav_gol_filter_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			unsigned int nb, unsigned int nf, unsigned int power,
+			unsigned int deriv)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  SavGol *result = sav_gol_filter(rows.data(), length, dim, nb, nf, power, deriv);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"power must be < nb+nf+1 (the fit would be underdetermined), and "
+	"deriv must be <= power");
+
+  return std::make_unique<SavGolWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1022,4 +1072,26 @@ PYBIND11_MODULE(_tisean, m)
       "which case it is used as-is. seed matches the CLI's -I option "
       "(default 3441341); the RNG is warmed up with 10000 discarded draws "
       "first, exactly like the CLI.");
+
+  auto sav_gol = m.def_submodule(
+      "sav_gol", "Savitzky-Golay filter/derivative estimation (source_c/sav_gol.c)");
+
+  py::class_<SavGolWrapper>(sav_gol, "SavGol")
+      .def_property_readonly("dim", &SavGolWrapper::dim)
+      .def_property_readonly("length", &SavGolWrapper::length)
+      .def_property_readonly("data", &SavGolWrapper::data,
+			      "Filtered series (or estimated derivative, if "
+			      "deriv != 0), shape (dim, length). The first "
+			      "nb and last nf points per row are left "
+			      "unfiltered (deriv == 0) or set to 0.0 "
+			      "(deriv != 0).");
+
+  sav_gol.def(
+      "filter", &sav_gol_filter_binding, py::arg("series"), py::arg("nb") = 2,
+      py::arg("nf") = 2, py::arg("power") = 2, py::arg("deriv") = 0,
+      "Apply a Savitzky-Golay filter to `series` (shape (dim, length)): "
+      "fits a degree-`power` polynomial through the `nb` points before and "
+      "`nf` points after each point (except within `nb`/`nf` of either "
+      "edge) and evaluates its `deriv`-th derivative there, normalized by "
+      "1/deriv!, matching the sav_gol CLI's -n/-p/-D options.");
 }
