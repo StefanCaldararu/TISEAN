@@ -27,6 +27,7 @@
 #include "sav_gol.h"
 #include "lzo-gm.h"
 #include "polynomp.h"
+#include "fsle.h"
 
 namespace py = pybind11;
 
@@ -925,6 +926,80 @@ polynomp_fit_binding(
   return std::make_unique<PolynompResultWrapper>(result);
 }
 
+// Owns an FSLEResult* and exposes its fields as numpy arrays. Not copyable
+// since FSLEResult doesn't support that; pybind11 holds it by unique_ptr.
+class FSLEResultWrapper {
+public:
+  explicit FSLEResultWrapper(FSLEResult *result) : result_(result) {}
+  FSLEResultWrapper(const FSLEResultWrapper &) = delete;
+  FSLEResultWrapper &operator=(const FSLEResultWrapper &) = delete;
+  ~FSLEResultWrapper() { fsle_free(result_); }
+
+  unsigned long n() const { return result_->n; }
+
+  py::array_t<double> eps() const {
+    py::array_t<double> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->eps[i];
+    return out;
+  }
+
+  py::array_t<double> lyapunov() const {
+    py::array_t<double> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->lyapunov[i];
+    return out;
+  }
+
+  py::array_t<long> count() const {
+    py::array_t<long> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->count[i];
+    return out;
+  }
+
+private:
+  FSLEResult *result_;
+};
+
+std::unique_ptr<FSLEResultWrapper>
+fsle_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned int dim, unsigned int delay, unsigned int mindist,
+		      double eps0, bool epsset)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length == 0)
+    throw std::invalid_argument("series must be non-empty");
+
+  unsigned long del = (unsigned long)delay * (dim - 1);
+  if (del + 1 + (unsigned long)mindist > length)
+    throw std::invalid_argument(
+	"series too short for the given dim/delay/mindist (length must be "
+	"> delay*(dim-1)+mindist)");
+
+  FSLEError error;
+  FSLEResult *result = fsle_compute(series.data(), length, dim, delay, mindist,
+				     eps0, epsset ? 1 : 0, &error);
+  if (result == nullptr) {
+    if (error == FSLE_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance");
+    if (error == FSLE_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range)");
+    throw std::invalid_argument(
+	"starting epsilon is too large relative to the data's own scale");
+  }
+
+  return std::make_unique<FSLEResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1351,4 +1426,37 @@ PYBIND11_MODULE(_tisean, m)
       "series is constant, if the normal-equations matrix is singular, or\n"
       "if order's shape or series' length is degenerate for the given\n"
       "dim/delay.");
+
+  auto fsle = m.def_submodule(
+      "fsle", "Finite-size Lyapunov exponent spectrum via Vulpiani et al. (source_c/fsle.c)");
+
+  py::class_<FSLEResultWrapper>(fsle, "FSLEResult")
+      .def_property_readonly("n", &FSLEResultWrapper::n,
+			      "Number of populated epsilon bins (bins with at "
+			      "least one divergence event)")
+      .def_property_readonly("eps", &FSLEResultWrapper::eps,
+			      "Epsilon of each bin, in the original series' "
+			      "units, shape (n,)")
+      .def_property_readonly("lyapunov", &FSLEResultWrapper::lyapunov,
+			      "Finite-size Lyapunov exponent estimate for "
+			      "each bin, shape (n,)")
+      .def_property_readonly("count", &FSLEResultWrapper::count,
+			      "Number of divergence events contributing to "
+			      "each bin, shape (n,)");
+
+  fsle.def(
+      "compute", &fsle_compute_binding, py::arg("series"), py::arg("dim") = 2,
+      py::arg("delay") = 1, py::arg("mindist") = 0, py::arg("eps0") = 1.e-3,
+      py::arg("epsset") = false,
+      "Estimate the finite-size Lyapunov exponent spectrum of `series` via\n"
+      "the method of Vulpiani et al., matching the fsle CLI's -m/-d/-t/-r\n"
+      "options. series is centered/rescaled to [0,1] internally (the input\n"
+      "array is not modified); pairs of nearby trajectory points are\n"
+      "tracked as they diverge across exponentially-spaced (factor\n"
+      "sqrt(2)) epsilon bins starting from eps0. If epsset=False (the\n"
+      "default), eps0 is treated as a fraction of the rescaled series'\n"
+      "standard deviation; if epsset=True, eps0 is interpreted in the same\n"
+      "units as the raw input data, matching the CLI's -r flag. Raises\n"
+      "ValueError if series is constant, or if the resulting starting\n"
+      "epsilon is not smaller than the data's own maximal epsilon.");
 }
