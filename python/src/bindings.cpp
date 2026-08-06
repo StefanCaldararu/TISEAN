@@ -5,6 +5,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "makenoise.h"
 #include "sav_gol.h"
 #include "lzo-gm.h"
+#include "polynomp.h"
 
 namespace py = pybind11;
 
@@ -849,6 +851,80 @@ lzo_gm_compute_binding(py::array_t<double, py::array::c_style | py::array::force
   return std::make_unique<LzoGmResultWrapper>(result);
 }
 
+// Owns a PolynompResult* and exposes its fields as numpy arrays. Not
+// copyable since PolynompResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PolynompResultWrapper {
+public:
+  explicit PolynompResultWrapper(PolynompResult *result) : result_(result) {}
+  PolynompResultWrapper(const PolynompResultWrapper &) = delete;
+  PolynompResultWrapper &operator=(const PolynompResultWrapper &) = delete;
+  ~PolynompResultWrapper() { polynomp_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int delay() const { return result_->delay; }
+  unsigned int plength() const { return result_->plength; }
+  double fce_insample() const { return result_->fce_insample; }
+  bool has_outsample() const { return result_->has_outsample != 0; }
+  double fce_outsample() const { return result_->fce_outsample; }
+  unsigned long step() const { return result_->step; }
+
+  py::array_t<double> param() const {
+    py::array_t<double> out((py::ssize_t)result_->plength);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->plength; i++)
+      buf(i) = result_->param[i];
+    return out;
+  }
+
+  py::array_t<double> forecast() const {
+    py::array_t<double> out((py::ssize_t)result_->step);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->step; i++)
+      buf(i) = result_->forecast[i];
+    return out;
+  }
+
+private:
+  PolynompResult *result_;
+};
+
+std::unique_ptr<PolynompResultWrapper>
+polynomp_fit_binding(
+    py::array_t<double, py::array::c_style | py::array::forcecast> series,
+    py::array_t<unsigned int, py::array::c_style | py::array::forcecast> order,
+    unsigned int delay, unsigned long insample, unsigned long step)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (order.ndim() != 2)
+    throw std::invalid_argument("order must be a 2D array of shape (plength, dim)");
+
+  auto length = (unsigned long)series.shape(0);
+  auto plength = (unsigned int)order.shape(0);
+  auto dim = (unsigned int)order.shape(1);
+
+  if (plength < 1)
+    throw std::invalid_argument("order must have at least one row (plength >= 1)");
+  if (dim < 1)
+    throw std::invalid_argument("order must have at least one column (dim >= 1)");
+  if (length <= (unsigned long)(dim - 1) * delay)
+    throw std::invalid_argument(
+	"series is too short for dim/delay: length must be > (dim - 1) * delay");
+
+  PolynompError error;
+  PolynompResult *result = polynomp_fit(series.data(), length, order.data(),
+					 plength, dim, delay, insample, step,
+					 &error);
+  if (result == nullptr) {
+    if (error == POLYNOMP_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance");
+    throw std::invalid_argument("normal-equations matrix is singular");
+  }
+
+  return std::make_unique<PolynompResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1232,4 +1308,47 @@ PYBIND11_MODULE(_tisean, m)
       "interpreted in the original (raw) data units and divided by the\n"
       "largest per-dimension raw interval before use, matching the CLI's\n"
       "-r/-R flags.");
+
+  auto polynomp = m.def_submodule(
+      "polynomp", "Polynomial fit and forecast of a scalar series (source_c/polynomp.c)");
+
+  py::class_<PolynompResultWrapper>(polynomp, "PolynompResult")
+      .def_property_readonly("dim", &PolynompResultWrapper::dim)
+      .def_property_readonly("delay", &PolynompResultWrapper::delay)
+      .def_property_readonly("plength", &PolynompResultWrapper::plength,
+			      "Number of polynomial terms/coefficients")
+      .def_property_readonly("param", &PolynompResultWrapper::param,
+			      "Fitted coefficients, shape (plength,), in the "
+			      "same term order as `order`")
+      .def_property_readonly("fce_insample", &PolynompResultWrapper::fce_insample,
+			      "In-sample forecast error, normalized by the "
+			      "series' standard deviation")
+      .def_property_readonly("has_outsample", &PolynompResultWrapper::has_outsample,
+			      "Whether fce_outsample was computed, i.e. "
+			      "whether insample < series.shape[0]")
+      .def_property_readonly("fce_outsample", &PolynompResultWrapper::fce_outsample,
+			      "Out-of-sample forecast error on [insample+1, "
+			      "length); 0.0 if has_outsample is False")
+      .def_property_readonly("step", &PolynompResultWrapper::step)
+      .def_property_readonly("forecast", &PolynompResultWrapper::forecast,
+			      "Values continuing the series, shape (step,)");
+
+  polynomp.def(
+      "fit", &polynomp_fit_binding, py::arg("series"), py::arg("order"),
+      py::arg("delay") = 1, py::arg("insample") = std::numeric_limits<unsigned long>::max(),
+      py::arg("step") = 1000,
+      "Fit a polynomial to `series` (1D) and forecast it `step` points\n"
+      "forward, matching the polynomp CLI's -d/-n/-L options. `order` is a\n"
+      "2D array of shape (plength, dim) of non-negative exponents (e.g.\n"
+      "tisean.polypar.generate(dim, order).params): term i of the\n"
+      "polynomial is the product over j in [0, dim) of\n"
+      "series[act - j*delay] ** order[i, j]. dim is taken from order's\n"
+      "second dimension, matching the CLI's -m (which also controls how\n"
+      "many columns are read from the parameter file). insample selects\n"
+      "how much of the series is used to fit the model; leaving it unset\n"
+      "uses the whole series and leaves fce_outsample/has_outsample\n"
+      "unset, matching the CLI's default (-n unset). Raises ValueError if\n"
+      "series is constant, if the normal-equations matrix is singular, or\n"
+      "if order's shape or series' length is degenerate for the given\n"
+      "dim/delay.");
 }

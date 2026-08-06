@@ -3,7 +3,7 @@ add_subdirectory(routines)
 set(TISEAN_C_PROGRAMS
   poincare rescale false_nearest
   lyap_k lyap_spec d2 nrlazy
-  lzo-test lfo-run lfo-test rbf polynom polyback polynomp
+  lzo-test lfo-run lfo-test rbf polynom polyback
   pca ghkss lfo-ar boxcount fsle
   resample nstat_z delay arima-model
   lzo-run ar-run
@@ -16,9 +16,9 @@ foreach(prog ${TISEAN_C_PROGRAMS})
 endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema,
-# recurr, xzero, mem_spec, lyap_r, makenoise, sav_gol, and lzo-gm use the
-# reentrant APIs in api/ (also used by the Python bindings under python/) instead of
-# duplicating the math inline.
+# recurr, xzero, mem_spec, lyap_r, makenoise, sav_gol, lzo-gm, and polynomp
+# use the reentrant APIs in api/ (also used by the Python bindings under
+# python/) instead of duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
@@ -81,3 +81,7 @@ install(TARGETS sav_gol RUNTIME DESTINATION bin)
 add_executable(lzo-gm lzo-gm.c api/lzo-gm_api.c)
 target_link_libraries(lzo-gm PRIVATE ddtsa)
 install(TARGETS lzo-gm RUNTIME DESTINATION bin)
+
+add_executable(polynomp polynomp.c api/polynomp_api.c)
+target_link_libraries(polynomp PRIVATE ddtsa)
+install(TARGETS polynomp RUNTIME DESTINATION bin)
