@@ -11,7 +11,7 @@ find_package(pybind11 CONFIG REQUIRED)
 set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2/mutual/
-# extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol need. Other
+# extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol/lzo-gm need. Other
 # routines get added here as they get their own reentrant API extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
@@ -30,6 +30,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/lyap_r_api.c
   ${TISEAN_ROOT}/source_c/api/makenoise_api.c
   ${TISEAN_ROOT}/source_c/api/sav_gol_api.c
+  ${TISEAN_ROOT}/source_c/api/lzo-gm_api.c
   ${TISEAN_ROOT}/source_c/routines/check_alloc.c
   ${TISEAN_ROOT}/source_c/routines/variance.c
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c
@@ -38,6 +39,8 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/routines/make_box.c
   ${TISEAN_ROOT}/source_c/routines/find_neighbors.c
   ${TISEAN_ROOT}/source_c/routines/make_multi_box.c
+  ${TISEAN_ROOT}/source_c/routines/find_multi_neighbors.c
+  ${TISEAN_ROOT}/source_c/routines/exclude_interval.c
 )
 
 target_include_directories(_tisean PRIVATE ${TISEAN_ROOT}/include)
