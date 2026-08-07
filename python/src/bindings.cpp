@@ -29,6 +29,7 @@
 #include "polynomp.h"
 #include "fsle.h"
 #include "false_nearest.h"
+#include "pca.h"
 
 namespace py = pybind11;
 
@@ -1094,6 +1095,69 @@ false_nearest_compute_binding(py::array_t<double, py::array::c_style | py::array
   return std::make_unique<FalseNearestWrapper>(result);
 }
 
+// Owns a PCA* and exposes its fields as numpy arrays. Not copyable since
+// PCA doesn't support that; pybind11 holds it by unique_ptr.
+class PCAWrapper {
+public:
+  explicit PCAWrapper(PCA *pca) : pca_(pca) {}
+  PCAWrapper(const PCAWrapper &) = delete;
+  PCAWrapper &operator=(const PCAWrapper &) = delete;
+  ~PCAWrapper() { pca_free(pca_); }
+
+  unsigned int dimemb() const { return pca_->dimemb; }
+
+  py::array_t<double> eigenvalues() const {
+    py::array_t<double> out((py::ssize_t)pca_->dimemb);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < pca_->dimemb; i++)
+      buf(i) = pca_->eigenvalues[i];
+    return out;
+  }
+
+  py::array_t<double> eigenvectors() const {
+    py::array_t<double> out({(py::ssize_t)pca_->dimemb, (py::ssize_t)pca_->dimemb});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < pca_->dimemb; i++)
+      for (unsigned int j = 0; j < pca_->dimemb; j++)
+	buf(i, j) = pca_->eigenvectors[i][j];
+    return out;
+  }
+
+private:
+  PCA *pca_;
+};
+
+std::unique_ptr<PCAWrapper>
+pca_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		     unsigned int emb, unsigned int delay)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim < 1)
+    throw std::invalid_argument("series must have at least one row (shape[0] >= 1)");
+  if (emb < 1)
+    throw std::invalid_argument("emb must be >= 1");
+
+  unsigned long minlen = (unsigned long)(emb - 1) * delay;
+  if (length <= minlen)
+    throw std::invalid_argument(
+	"series too short for the given emb/delay (length must be > "
+	"(emb-1)*delay)");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  PCA *pca = pca_compute(rows.data(), length, dim, emb, delay);
+  if (pca == nullptr)
+    throw std::invalid_argument("PCA eigenvalue solver failed to converge");
+
+  return std::make_unique<PCAWrapper>(pca);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1585,4 +1649,29 @@ PYBIND11_MODULE(_tisean, m)
       "`rt` is the escape factor and `theiler` is the Theiler window.\n"
       "Raises ValueError if some component is constant, or if no neighbor\n"
       "pair is found for some embedding dimension.");
+
+  auto pca = m.def_submodule(
+      "pca", "Global PCA of the delay-embedded covariance matrix (source_c/pca.c)");
+
+  py::class_<PCAWrapper>(pca, "PCA")
+      .def_property_readonly("dimemb", &PCAWrapper::dimemb,
+			      "Size of the covariance matrix (dim*emb)")
+      .def_property_readonly("eigenvalues", &PCAWrapper::eigenvalues,
+			      "Eigenvalues sorted descending, shape (dimemb,)")
+      .def_property_readonly("eigenvectors", &PCAWrapper::eigenvectors,
+			      "Eigenvectors, shape (dimemb, dimemb); "
+			      "eigenvectors[i, j] is component i of the "
+			      "eigenvector for eigenvalues[j]");
+
+  pca.def(
+      "compute", &pca_compute_binding, py::arg("series"), py::arg("emb") = 1,
+      py::arg("delay") = 1,
+      "Compute the eigenvalues/eigenvectors of the covariance matrix of\n"
+      "`series` (shape (dim, length)), matching the pca CLI's -m (embedding\n"
+      "dimension part)/-d options. series is expected to already be\n"
+      "centered (zero mean per row), the same way the pca CLI centers its\n"
+      "input before computing. Each of the dim rows is embedded with `emb`\n"
+      "delayed copies (spaced `delay` apart) before the dim*emb by dim*emb\n"
+      "covariance matrix is built. Raises ValueError if the eigenvalue\n"
+      "solver fails to converge.");
 }
