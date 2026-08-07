@@ -31,6 +31,7 @@
 #include "false_nearest.h"
 #include "pca.h"
 #include "delay.h"
+#include "lyap_k.h"
 
 namespace py = pybind11;
 
@@ -1263,6 +1264,102 @@ delay_embed_binding(py::array_t<double, py::array::c_style | py::array::forcecas
   return std::make_unique<DelayResultWrapper>(result);
 }
 
+// Owns a LyapK* and exposes its fields as numpy arrays. Not copyable since
+// LyapK doesn't support that; pybind11 holds it by unique_ptr.
+class LyapKWrapper {
+public:
+  explicit LyapKWrapper(LyapK *result) : result_(result) {}
+  LyapKWrapper(const LyapKWrapper &) = delete;
+  LyapKWrapper &operator=(const LyapKWrapper &) = delete;
+  ~LyapKWrapper() { lyap_k_free(result_); }
+
+  unsigned int epscount() const { return result_->epscount; }
+  unsigned int mindim() const { return result_->mindim; }
+  unsigned int maxdim() const { return result_->maxdim; }
+  unsigned int maxiter() const { return result_->maxiter; }
+
+  py::array_t<double> epsilon() const {
+    py::array_t<double> out((py::ssize_t)result_->epscount);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int e = 0; e < result_->epscount; e++)
+      buf(e) = result_->epsilon[e];
+    return out;
+  }
+
+  py::array_t<long> count() const {
+    unsigned int ndim = result_->maxdim - result_->mindim + 1;
+    py::array_t<long> out({(py::ssize_t)result_->epscount, (py::ssize_t)ndim,
+			    (py::ssize_t)(result_->maxiter + 1)});
+    auto buf = out.mutable_unchecked<3>();
+    for (unsigned int e = 0; e < result_->epscount; e++)
+      for (unsigned int d = 0; d < ndim; d++)
+	for (unsigned int j = 0; j <= result_->maxiter; j++)
+	  buf(e, d, j) = result_->count[e][d][j];
+    return out;
+  }
+
+  py::array_t<double> lyap() const {
+    unsigned int ndim = result_->maxdim - result_->mindim + 1;
+    py::array_t<double> out({(py::ssize_t)result_->epscount, (py::ssize_t)ndim,
+			      (py::ssize_t)(result_->maxiter + 1)});
+    auto buf = out.mutable_unchecked<3>();
+    for (unsigned int e = 0; e < result_->epscount; e++)
+      for (unsigned int d = 0; d < ndim; d++)
+	for (unsigned int j = 0; j <= result_->maxiter; j++)
+	  buf(e, d, j) = result_->lyap[e][d][j];
+    return out;
+  }
+
+private:
+  LyapK *result_;
+};
+
+std::unique_ptr<LyapKWrapper>
+lyap_k_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			unsigned int mindim, unsigned int maxdim, unsigned int delay,
+			double epsmin, double epsmax, bool eps0set, bool eps1set,
+			unsigned int epscount, unsigned long reference,
+			unsigned int maxiter, unsigned int window)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length == 0)
+    throw std::invalid_argument("series must be non-empty");
+
+  /* Mirrors the clamping lyap_k_compute() itself applies to mindim/maxdim,
+     but computed with the *actual* (post-clamp) maxdim, unlike the CLI's
+     own too-few-points check (which runs before that clamp and so can
+     under-count the required length when maxdim < 2 or mindim > maxdim -
+     see lyap_k.h). Using the clamped value here is what actually keeps the
+     box-building/neighbor-search reads in bounds. */
+  unsigned int cmindim = mindim < 2 ? 2 : mindim;
+  unsigned int cmaxdim = maxdim < 2 ? 2 : maxdim;
+  if (cmindim > cmaxdim)
+    cmaxdim = cmindim;
+  unsigned long need = (unsigned long)maxiter + (unsigned long)(cmaxdim - 1) * delay;
+  if (need >= length)
+    throw std::invalid_argument(
+	"series too short for the given mindim/maxdim/delay/maxiter (length "
+	"must be > maxiter+(maxdim-1)*delay once mindim/maxdim are clamped "
+	"to >= 2)");
+
+  LyapKError error;
+  LyapK *result = lyap_k_compute(series.data(), length, mindim, maxdim, delay,
+				  epsmin, epsmax, eps0set ? 1 : 0, eps1set ? 1 : 0,
+				  epscount, reference, maxiter, window,
+				  nullptr, nullptr, &error);
+  if (result == nullptr) {
+    if (error == LYAP_K_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range)");
+    throw std::invalid_argument(
+	"series too short for the given mindim/maxdim/delay/maxiter");
+  }
+
+  return std::make_unique<LyapKWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1816,4 +1913,61 @@ PYBIND11_MODULE(_tisean, m)
       "n_vectors is series.shape[1] - max(lags), or 0 if series.shape[1] "
       "is not larger than max(lags) (matching the CLI, which then prints "
       "nothing rather than erroring).");
+
+  auto lyap_k = m.def_submodule(
+      "lyap_k", "Maximal Lyapunov exponent via Kantz (source_c/lyap_k.c)");
+
+  py::class_<LyapKWrapper>(lyap_k, "LyapKResult")
+      .def_property_readonly("epscount", &LyapKWrapper::epscount,
+			      "Number of epsilon values actually used (may "
+			      "be forced to 1 if mineps is not smaller than "
+			      "maxeps)")
+      .def_property_readonly("mindim", &LyapKWrapper::mindim,
+			      "Clamped mindim actually used (>= 2)")
+      .def_property_readonly("maxdim", &LyapKWrapper::maxdim,
+			      "Clamped maxdim actually used (>= mindim)")
+      .def_property_readonly("maxiter", &LyapKWrapper::maxiter,
+			      "Number of iteration steps; count/lyap hold "
+			      "entries for steps 0..maxiter")
+      .def_property_readonly("epsilon", &LyapKWrapper::epsilon,
+			      "Neighborhood radius used for each row, in "
+			      "the original series' units, shape "
+			      "(epscount,)")
+      .def_property_readonly("count", &LyapKWrapper::count,
+			      "Number of reference points contributing to "
+			      "lyap[e,d,j], shape (epscount, "
+			      "maxdim-mindim+1, maxiter+1); 0 means no data "
+			      "for that step, mirroring the CLI's skipping "
+			      "that row entirely in its output")
+      .def_property_readonly("lyap", &LyapKWrapper::lyap,
+			      "Raw sum of already-averaged-per-reference-"
+			      "point log divergences, shape (epscount, "
+			      "maxdim-mindim+1, maxiter+1); divide by "
+			      "count[e,d,j] to get the CLI's printed value, "
+			      "only meaningful where count[e,d,j] > 0");
+
+  lyap_k.def(
+      "compute", &lyap_k_compute_binding, py::arg("series"), py::arg("mindim") = 2,
+      py::arg("maxdim") = 2, py::arg("delay") = 1, py::arg("epsmin") = 1.e-3,
+      py::arg("epsmax") = 1.e-2, py::arg("eps0set") = false,
+      py::arg("eps1set") = false, py::arg("epscount") = 5,
+      py::arg("reference") = std::numeric_limits<unsigned long>::max(),
+      py::arg("maxiter") = 50, py::arg("window") = 0,
+      "Estimate the maximal Lyapunov exponent of `series` via the method "
+      "of Kantz, matching the lyap_k CLI's -m/-M/-d/-r/-R/-#/-n/-s/-t "
+      "options. series is rescaled to [0,1) internally (the input array "
+      "is not modified); for each of epscount neighborhood radii "
+      "(geometrically spaced between epsmin and epsmax, in rescaled [0,1) "
+      "units unless eps0set/eps1set is True, in which case epsmin/epsmax "
+      "are interpreted in the same units as the raw input data and "
+      "divided by its own data range, matching the CLI's -r/-R flags), a "
+      "box-assisted nearest-neighbor search finds, for the first "
+      "`reference` points, neighbors within that radius (skipping any "
+      "within `window` samples of the reference point) for every "
+      "embedding dimension between mindim and maxdim, and accumulates "
+      "the log divergence of the two trajectories for maxiter iteration "
+      "steps ahead. reference defaults to using every point (the CLI's "
+      "default of '# of data'). Raises ValueError if series is constant, "
+      "or if series is too short for the given mindim/maxdim/delay/"
+      "maxiter.");
 }

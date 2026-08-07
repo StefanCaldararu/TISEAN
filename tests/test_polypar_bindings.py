@@ -4,7 +4,7 @@ import subprocess
 import numpy as np
 import pytest
 
-tisean = pytest.importorskip("tisean")
+import tisean
 
 # The CLI prints integers with "%u ", so this doesn't strictly need the
 # tolerance the other bindings' tests need for "%e" output - but we keep

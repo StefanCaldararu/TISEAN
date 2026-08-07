@@ -3,7 +3,7 @@ import subprocess
 import numpy as np
 import pytest
 
-tisean = pytest.importorskip("tisean")
+import tisean
 
 AR_MODEL_TOO_MANY_POLES = 52
 
