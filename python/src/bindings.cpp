@@ -28,6 +28,7 @@
 #include "lzo-gm.h"
 #include "polynomp.h"
 #include "fsle.h"
+#include "false_nearest.h"
 
 namespace py = pybind11;
 
@@ -1000,6 +1001,99 @@ fsle_compute_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<FSLEResultWrapper>(result);
 }
 
+// Owns a FalseNearest* and exposes its fields as numpy arrays. Not copyable
+// since FalseNearest doesn't support that; pybind11 holds it by unique_ptr.
+class FalseNearestWrapper {
+public:
+  explicit FalseNearestWrapper(FalseNearest *result) : result_(result) {}
+  FalseNearestWrapper(const FalseNearestWrapper &) = delete;
+  FalseNearestWrapper &operator=(const FalseNearestWrapper &) = delete;
+  ~FalseNearestWrapper() { false_nearest_free(result_); }
+
+  unsigned long n() const { return result_->n; }
+
+  py::array_t<unsigned int> dimension() const {
+    py::array_t<unsigned int> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->dimension[i];
+    return out;
+  }
+
+  py::array_t<double> fraction() const {
+    py::array_t<double> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->fraction[i];
+    return out;
+  }
+
+  py::array_t<double> avg_eps() const {
+    py::array_t<double> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->avg_eps[i];
+    return out;
+  }
+
+  py::array_t<double> sigma_eps() const {
+    py::array_t<double> out((py::ssize_t)result_->n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n; i++)
+      buf(i) = result_->sigma_eps[i];
+    return out;
+  }
+
+private:
+  FalseNearest *result_;
+};
+
+std::unique_ptr<FalseNearestWrapper>
+false_nearest_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			       unsigned int minemb, unsigned int maxemb,
+			       unsigned int delay, unsigned long theiler,
+			       double rt, double eps0)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (comp, length)");
+
+  auto comp = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (comp < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (length < 1)
+    throw std::invalid_argument("series must be non-empty");
+  if (minemb < 1)
+    throw std::invalid_argument("minemb must be >= 1");
+
+  if (minemb <= maxemb) {
+    unsigned long minlen = (unsigned long)(maxemb + 1) * delay;
+    if (length <= minlen)
+      throw std::invalid_argument(
+	  "series too short for the given maxemb/delay (length must be "
+	  "> (maxemb+1)*delay)");
+  }
+
+  std::vector<double *> rows(comp);
+  for (unsigned int i = 0; i < comp; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  FalseNearestError error;
+  FalseNearest *result = false_nearest_compute(rows.data(), length, comp, delay,
+						minemb, maxemb, theiler, rt, eps0,
+						&error);
+  if (result == nullptr) {
+    if (error == FALSE_NEAREST_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range) for some component");
+    if (error == FALSE_NEAREST_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance for some component");
+    throw std::invalid_argument(
+	"not enough neighbor points found for some embedding dimension");
+  }
+
+  return std::make_unique<FalseNearestWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1459,4 +1553,36 @@ PYBIND11_MODULE(_tisean, m)
       "units as the raw input data, matching the CLI's -r flag. Raises\n"
       "ValueError if series is constant, or if the resulting starting\n"
       "epsilon is not smaller than the data's own maximal epsilon.");
+
+  auto false_nearest = m.def_submodule(
+      "false_nearest", "Fraction of false nearest neighbors (source_c/false_nearest.c)");
+
+  py::class_<FalseNearestWrapper>(false_nearest, "FalseNearestResult")
+      .def_property_readonly("n", &FalseNearestWrapper::n,
+			      "Number of embedding dimensions computed")
+      .def_property_readonly("dimension", &FalseNearestWrapper::dimension,
+			      "Total embedding dimension (comp * emb) for "
+			      "each row, shape (n,)")
+      .def_property_readonly("fraction", &FalseNearestWrapper::fraction,
+			      "Fraction of false nearest neighbors, shape (n,)")
+      .def_property_readonly("avg_eps", &FalseNearestWrapper::avg_eps,
+			      "Average neighbor distance at which a false "
+			      "neighbor was decided, in the original series' "
+			      "units, shape (n,)")
+      .def_property_readonly("sigma_eps", &FalseNearestWrapper::sigma_eps,
+			      "Standard deviation of that distance, in the "
+			      "original series' units, shape (n,)");
+
+  false_nearest.def(
+      "compute", &false_nearest_compute_binding, py::arg("series"),
+      py::arg("minemb") = 1, py::arg("maxemb") = 5, py::arg("delay") = 1,
+      py::arg("theiler") = 0, py::arg("rt") = 2.0, py::arg("eps0") = 1.0e-5,
+      "Estimate the fraction of false nearest neighbors of `series`\n"
+      "(shape (comp, length)) for every total embedding dimension\n"
+      "comp*emb, emb running from minemb to maxemb inclusive, matching the\n"
+      "false_nearest CLI's -m/-M/-d/-t/-f options. series is internally\n"
+      "rescaled to [0,1) per component (the input array is not modified);\n"
+      "`rt` is the escape factor and `theiler` is the Theiler window.\n"
+      "Raises ValueError if some component is constant, or if no neighbor\n"
+      "pair is found for some embedding dimension.");
 }
