@@ -24,12 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/lyap_k.h"
 
 #define WID_STR "Estimates the maximal Lyapunov exponent using the Kantz\n\t\
 algorithm"
-
-#define BOX 128
-const unsigned int ibox=BOX-1;
 
 unsigned long length=ULONG_MAX;
 unsigned long exclude=0;
@@ -47,9 +45,7 @@ char eps0set=0,eps1set=0;
 char *outfile=NULL;
 char *infile=NULL;
 
-double *series,**lyap;
-long box[BOX][BOX],*liste,**lfound,*found,**count;
-double max,min;
+double *series;
 
 void show_options(char *progname)
 {
@@ -120,130 +116,23 @@ void scan_options(int n,char **str)
       outfile=out;
 }
 
-void put_in_boxes(double eps)
+void print_progress(double peps, void *user_data)
 {
-  unsigned long i;
-  long j,k;
-  static unsigned long blength;
-
-  blength=length-(maxdim-1)*delay-maxiter;
-
-  for (i=0;i<BOX;i++)
-    for (j=0;j<BOX;j++)
-      box[i][j]= -1;
-
-  for (i=0;i<blength;i++) {
-    j=(long)(series[i]/eps)&ibox;
-    k=(long)(series[i+delay]/eps)&ibox;
-    liste[i]=box[j][k];
-    box[j][k]=i;
-  }
-}
-
-void lfind_neighbors(long act,double eps)
-{
-  unsigned int hi,k,k1;
-  long i,j,i1,i2,j1,element;
-  static long lwindow;
-  double dx,eps2=sqr(eps);
-
-  lwindow=(long)window;
-  for (hi=0;hi<maxdim-1;hi++)
-    found[hi]=0;
-  i=(long)(series[act]/eps)&ibox;
-  j=(long)(series[act+delay]/eps)&ibox;
-  for (i1=i-1;i1<=i+1;i1++) {
-    i2=i1&ibox;
-    for (j1=j-1;j1<=j+1;j1++) {
-      element=box[i2][j1&ibox];
-      while (element != -1) {
-	if ((element < (act-lwindow)) || (element > (act+lwindow))) {
-	  dx=sqr(series[act]-series[element]);
-	  if (dx <= eps2) {
-	    for (k=1;k<maxdim;k++) {
-	      k1=k*delay;
-	      dx += sqr(series[act+k1]-series[element+k1]);
-	      if (dx <= eps2) {
-		k1=k-1;
-		lfound[k1][found[k1]]=element;
-		found[k1]++;
-	      }
-	      else
-		break;
-	    }
-	  }
-	}
-	element=liste[element];
-      }
-    }
-  }
-}
-
-void iterate_points(long act)
-{
-  double **lfactor;
-  double *dx;
-  unsigned int i,j,l,l1;
-  long k,element,**lcount;
-  
-  check_alloc(lfactor=(double**)malloc(sizeof(double*)*(maxdim-1)));
-  check_alloc(lcount=(long**)malloc(sizeof(long*)*(maxdim-1)));
-  for (i=0;i<maxdim-1;i++) {
-    check_alloc(lfactor[i]=(double*)malloc(sizeof(double)*(maxiter+1)));
-    check_alloc(lcount[i]=(long*)malloc(sizeof(long)*(maxiter+1)));
-  }
-  check_alloc(dx=(double*)malloc(sizeof(double)*(maxiter+1)));
-
-  for (i=0;i<=maxiter;i++)
-    for (j=0;j<maxdim-1;j++) {
-      lfactor[j][i]=0.0;
-      lcount[j][i]=0;
-    }
-  
-  for (j=mindim-2;j<maxdim-1;j++) {
-    for (k=0;k<found[j];k++) {
-      element=lfound[j][k];
-      for (i=0;i<=maxiter;i++)
-	dx[i]=sqr(series[act+i]-series[element+i]);
-      for (l=1;l<j+2;l++) {
-	l1=l*delay;
-	for (i=0;i<=maxiter;i++)
-	  dx[i] += sqr(series[act+i+l1]-series[element+l1+i]);
-      }
-      for (i=0;i<=maxiter;i++)
-	if (dx[i] > 0.0){
-	  lcount[j][i]++;
-	  lfactor[j][i] += dx[i];
-	}
-    }
-  }
-  for (i=mindim-2;i<maxdim-1;i++)
-    for (j=0;j<=maxiter;j++)
-      if (lcount[i][j]) {
-	count[i][j]++;
-	lyap[i][j] += log(lfactor[i][j]/lcount[i][j])/2.0;
-      }
-  
-  for (i=0;i<maxdim-1;i++){
-    free(lfactor[i]);
-    free(lcount[i]);
-  }
-  free(lcount);
-  free(lfactor);
-  free(dx);
+  if (verbosity&VER_USR1)
+    fprintf(stderr,"epsilon= %e\n",peps);
 }
 
 int main(int argc,char **argv)
 {
   char stdi=0;
-  double eps_fak;
-  double epsilon;
   unsigned int i,j,l;
   FILE *fout;
+  LyapK *result;
+  LyapKError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -267,75 +156,45 @@ int main(int argc,char **argv)
   test_outfile(outfile);
 
   series=get_series(infile,&length,exclude,column,verbosity);
-  rescale_data(series,length,&min,&max);
 
-  if (eps0set)
-    epsmin /= max;
-  if (eps1set)
-    epsmax /= max;
-
-  if (epsmin >= epsmax) {
-    epsmax=epsmin;
-    epscount=1;
+  result=lyap_k_compute(series,length,mindim,maxdim,delay,epsmin,epsmax,
+			 eps0set,eps1set,epscount,reference,maxiter,window,
+			 print_progress,NULL,&error);
+  if (result == NULL) {
+    if (error == LYAP_K_ERR_ZERO_INTERVAL) {
+      /* interval == 0.0 only happens when every point of series equals
+	 series[0], so series[0] stands in for both the original
+	 rescale_data()'s *min and *min+*interval (which are then also
+	 equal). */
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",series[0],series[0]);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    else {
+      fprintf(stderr,"Too few points to handle these parameters!\n");
+      exit(LYAP_K__MAXITER_TOO_LARGE);
+    }
   }
-  
-  if (reference > (length-maxiter-(maxdim-1)*delay))
-    reference=length-maxiter-(maxdim-1)*delay;
-  if ((maxiter+(maxdim-1)*delay) >= length) {
-    fprintf(stderr,"Too few points to handle these parameters!\n");
-    exit(LYAP_K__MAXITER_TOO_LARGE);
-  }
-
-  if (maxdim < 2)
-    maxdim=2;
-  if (mindim < 2)
-    mindim=2;
-  if (mindim > maxdim)
-    maxdim=mindim;
-  
-  check_alloc(liste=(long*)malloc(sizeof(long)*(length)));
-  check_alloc(found=(long*)malloc(sizeof(long)*(maxdim-1)));
-  check_alloc(lfound=(long**)malloc(sizeof(long*)*(maxdim-1)));
-  for (i=0;i<maxdim-1;i++)
-    check_alloc(lfound[i]=(long*)malloc(sizeof(long)*(length)));
-  check_alloc(count=(long**)malloc(sizeof(long*)*(maxdim-1)));
-  for (i=0;i<maxdim-1;i++)
-    check_alloc(count[i]=(long*)malloc(sizeof(long)*(maxiter+1)));
-  check_alloc(lyap=(double**)malloc(sizeof(double*)*(maxdim-1)));
-  for (i=0;i<maxdim-1;i++)
-    check_alloc(lyap[i]=(double*)malloc(sizeof(double)*(maxiter+1)));
-
-  if (epscount == 1)
-    eps_fak=1.0;
-  else
-    eps_fak=pow(epsmax/epsmin,1.0/(double)(epscount-1));
 
   fout=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
-  for (l=0;l<epscount;l++) {
-    epsilon=epsmin*pow(eps_fak,(double)l);
-    for (i=0;i<maxdim-1;i++)
-      for (j=0;j<=maxiter;j++) {
-	count[i][j]=0;
-	lyap[i][j]=0.0;
-      }
-    put_in_boxes(epsilon);
-    for (i=0;i<reference;i++) {
-      lfind_neighbors(i,epsilon);
-      iterate_points(i);
-    }
-    if (verbosity&VER_USR1)
-      fprintf(stderr,"epsilon= %e\n",epsilon*max);
-    for (i=mindim-2;i<maxdim-1;i++) {
-      fprintf(fout,"#epsilon= %e  dim= %d\n",epsilon*max,i+2);
-      for (j=0;j<=maxiter;j++)
-	if (count[i][j])
-	  fprintf(fout,"%d %e %ld\n",j,lyap[i][j]/count[i][j],count[i][j]);
+  for (l=0;l<result->epscount;l++) {
+    for (i=0;i<result->maxdim-result->mindim+1;i++) {
+      fprintf(fout,"#epsilon= %e  dim= %d\n",result->epsilon[l],
+	      (int)(result->mindim+i));
+      for (j=0;j<=result->maxiter;j++)
+	if (result->count[l][i][j])
+	  fprintf(fout,"%d %e %ld\n",j,
+		  result->lyap[l][i][j]/result->count[l][i][j],
+		  result->count[l][i][j]);
       fprintf(fout,"\n");
     }
     fflush(fout);
   }
   fclose(fout);
+
+  lyap_k_free(result);
+
   return 0;
 }
