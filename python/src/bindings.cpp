@@ -32,6 +32,7 @@
 #include "pca.h"
 #include "delay.h"
 #include "lyap_k.h"
+#include "lzo-test.h"
 
 namespace py = pybind11;
 
@@ -1360,6 +1361,84 @@ lyap_k_compute_binding(py::array_t<double, py::array::c_style | py::array::force
   return std::make_unique<LyapKWrapper>(result);
 }
 
+// Owns a LzoTest* and exposes its fields as numpy arrays. Not copyable since
+// LzoTest doesn't support that; pybind11 holds it by unique_ptr.
+class LzoTestWrapper {
+public:
+  explicit LzoTestWrapper(LzoTest *result) : result_(result) {}
+  LzoTestWrapper(const LzoTestWrapper &) = delete;
+  LzoTestWrapper &operator=(const LzoTestWrapper &) = delete;
+  ~LzoTestWrapper() { lzo_test_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned long step() const { return result_->step; }
+  unsigned long n_ref() const { return result_->n_ref; }
+
+  py::array_t<double> error() const {
+    py::array_t<double> out({(py::ssize_t)result_->step, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->step; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->error[i * result_->dim + j];
+    return out;
+  }
+
+  py::array_t<double> diffs() const {
+    py::array_t<double> out({(py::ssize_t)result_->n_ref, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->n_ref; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->diffs[i * result_->dim + j];
+    return out;
+  }
+
+private:
+  LzoTest *result_;
+};
+
+std::unique_ptr<LzoTestWrapper>
+lzo_test_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			  unsigned int embed, unsigned int delay, unsigned int minn,
+			  unsigned long step, unsigned long refstep, py::object causal,
+			  py::object n_ref, double eps0, bool epsset, double epsf)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (length < 1)
+    throw std::invalid_argument("series must be non-empty");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+  if (refstep < 1)
+    throw std::invalid_argument("refstep must be >= 1");
+  if (step >= length)
+    throw std::invalid_argument("step must be < series.shape[1]");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  unsigned long resolved_causal = causal.is_none() ? step : causal.cast<unsigned long>();
+  char n_ref_set = n_ref.is_none() ? 0 : 1;
+  unsigned long resolved_n_ref = n_ref.is_none() ? 0 : n_ref.cast<unsigned long>();
+
+  LzoTestError error;
+  LzoTest *result = lzo_test_compute(rows.data(), length, dim, embed, delay, minn,
+				      step, refstep, resolved_causal, resolved_n_ref,
+				      n_ref_set, eps0, epsset ? 1 : 0, epsf, &error);
+  if (result == nullptr) {
+    if (error == LZO_TEST_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range) for some component");
+    throw std::invalid_argument("series has zero variance for some component");
+  }
+
+  return std::make_unique<LzoTestWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1970,4 +2049,45 @@ PYBIND11_MODULE(_tisean, m)
       "default of '# of data'). Raises ValueError if series is constant, "
       "or if series is too short for the given mindim/maxdim/delay/"
       "maxiter.");
+
+  auto lzo_test = m.def_submodule(
+      "lzo_test", "Zeroth-order forecast error vs. horizon (source_c/lzo-test.c)");
+
+  py::class_<LzoTestWrapper>(lzo_test, "LzoTestResult")
+      .def_property_readonly("dim", &LzoTestWrapper::dim)
+      .def_property_readonly("step", &LzoTestWrapper::step)
+      .def_property_readonly("n_ref", &LzoTestWrapper::n_ref)
+      .def_property_readonly("error", &LzoTestWrapper::error,
+			      "Relative forecast error per horizon/component, "
+			      "shape (step, dim); row i is horizon i+1 - the "
+			      "same values the CLI's default output prints")
+      .def_property_readonly("diffs", &LzoTestWrapper::diffs,
+			      "Per-reference-point one-step forecast "
+			      "differences, scaled back into the original "
+			      "series' units, shape (n_ref, dim) - matches "
+			      "the CLI's extra output rows under -V2");
+
+  lzo_test.def(
+      "compute", &lzo_test_compute_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("minn") = 30, py::arg("step") = 1,
+      py::arg("refstep") = 1, py::arg("causal") = py::none(),
+      py::arg("n_ref") = py::none(), py::arg("eps0") = 1.e-3,
+      py::arg("epsset") = false, py::arg("epsf") = 1.2,
+      "Estimate the average forecast error of a zeroth-order (local-\n"
+      "constant) fit on `series` (shape (dim, length)) for forecast\n"
+      "horizons 1..step, matching the lzo-test CLI's -m (embedding\n"
+      "dimension part)/-d/-k/-s/-S/-C/-n/-r/-f options. Each dimension is\n"
+      "independently rescaled to [0,1) internally (the input array is not\n"
+      "modified). causal (the CLI's -C) defaults to `step` if not given\n"
+      "(None), matching the CLI's default (unset -C). n_ref (the CLI's\n"
+      "-n) defaults to using the whole series if not given (None),\n"
+      "matching the CLI's default of 'length'; the number of reference\n"
+      "points actually scanned is then clamped to fit within length given\n"
+      "step/refstep, same as the CLI. eps0 is the starting search radius\n"
+      "in rescaled [0,1) units, unless epsset=True, in which case eps0 is\n"
+      "interpreted in the same units as the raw input data and divided by\n"
+      "the average of the per-component raw intervals before use,\n"
+      "matching the CLI's -r flag. epsf is the growth factor for the\n"
+      "search radius. Raises ValueError if some component is constant or\n"
+      "has zero variance after rescaling.");
 }
