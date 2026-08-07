@@ -4,7 +4,7 @@ import subprocess
 import numpy as np
 import pytest
 
-tisean = pytest.importorskip("tisean")
+import tisean
 
 # The CLI prints everything through "%e" (6 digits after the point, so ~7
 # significant digits), so comparisons against numbers parsed from its
