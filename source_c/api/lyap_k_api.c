@@ -228,10 +228,15 @@ LyapK *lyap_k_compute(const double *series_in, unsigned long length,
     epscount = 1;
   }
 
-  /* Uses the caller's raw (un-clamped) maxdim, exactly like the CLI: the
-     too-few-points check below runs before mindim/maxdim get clamped. */
-  if (reference > (length - maxiter - (maxdim - 1) * delay))
-    reference = length - maxiter - (maxdim - 1) * delay;
+  /* Issue #78 Fix. */
+  {
+    unsigned int ref_mindim = mindim < 2 ? 2 : mindim;
+    unsigned int ref_maxdim = maxdim < 2 ? 2 : maxdim;
+    if (ref_mindim > ref_maxdim)
+      ref_maxdim = ref_mindim;
+    if (reference > (length - maxiter - (ref_maxdim - 1) * delay))
+      reference = length - maxiter - (ref_maxdim - 1) * delay;
+  }
   if ((maxiter + (maxdim - 1) * delay) >= length) {
     free(series);
     if (error != NULL)
