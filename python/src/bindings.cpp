@@ -33,6 +33,7 @@
 #include "delay.h"
 #include "lyap_k.h"
 #include "lzo-test.h"
+#include "boxcount.h"
 
 namespace py = pybind11;
 
@@ -1439,6 +1440,101 @@ lzo_test_compute_binding(py::array_t<double, py::array::c_style | py::array::for
   return std::make_unique<LzoTestWrapper>(result);
 }
 
+// Owns a BoxCount* and exposes its fields as numpy arrays. Not copyable
+// since BoxCount doesn't support that; pybind11 holds it by unique_ptr.
+class BoxCountWrapper {
+public:
+  explicit BoxCountWrapper(BoxCount *result) : result_(result) {}
+  BoxCountWrapper(const BoxCountWrapper &) = delete;
+  BoxCountWrapper &operator=(const BoxCountWrapper &) = delete;
+  ~BoxCountWrapper() { boxcount_free(result_); }
+
+  unsigned int dimension() const { return result_->dimension; }
+  unsigned int maxembed() const { return result_->maxembed; }
+  unsigned long epscount() const { return result_->epscount; }
+
+  py::array_t<double> eps() const {
+    py::array_t<double> out((py::ssize_t)result_->epscount);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long k = 0; k < result_->epscount; k++)
+      buf(k) = result_->eps[k];
+    return out;
+  }
+
+  py::array_t<double> entropy() const {
+    unsigned long epscount = result_->epscount;
+    unsigned long n = (unsigned long)result_->dimension * result_->maxembed;
+    py::array_t<double> out({(py::ssize_t)epscount, (py::ssize_t)n});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long k = 0; k < epscount; k++)
+      for (unsigned long i = 0; i < n; i++)
+	buf(k, i) = result_->entropy[k][i];
+    return out;
+  }
+
+  py::array_t<unsigned int> which_component() const {
+    unsigned long n = (unsigned long)result_->dimension * result_->maxembed;
+    py::array_t<unsigned int> out((py::ssize_t)n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < n; i++)
+      buf(i) = result_->which_component[i];
+    return out;
+  }
+
+  py::array_t<unsigned int> which_embed() const {
+    unsigned long n = (unsigned long)result_->dimension * result_->maxembed;
+    py::array_t<unsigned int> out((py::ssize_t)n);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < n; i++)
+      buf(i) = result_->which_embed[i];
+    return out;
+  }
+
+private:
+  BoxCount *result_;
+};
+
+std::unique_ptr<BoxCountWrapper>
+boxcount_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			  unsigned int maxembed, unsigned int delay, double q,
+			  double epsmin, bool epsmin_absolute, double epsmax,
+			  bool epsmax_absolute, unsigned int epscount)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dimension, length)");
+
+  auto dimension = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dimension < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (length < 1)
+    throw std::invalid_argument("series must be non-empty");
+  if (maxembed < 1)
+    throw std::invalid_argument("maxembed must be >= 1");
+  if (delay < 1)
+    throw std::invalid_argument("delay must be >= 1");
+
+  unsigned long minlen = (unsigned long)(maxembed - 1) * delay;
+  if (length <= minlen)
+    throw std::invalid_argument(
+	"series too short for the given maxembed/delay (length must be "
+	"> (maxembed-1)*delay)");
+
+  std::vector<double *> rows(dimension);
+  for (unsigned int i = 0; i < dimension; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  BoxCountError error;
+  BoxCount *result = boxcount_compute(rows.data(), length, dimension, maxembed,
+				       delay, q, epsmin, epsmin_absolute ? 1 : 0,
+				       epsmax, epsmax_absolute ? 1 : 0, epscount,
+				       &error);
+  if (result == nullptr)
+    throw std::invalid_argument("series is constant (zero range) for some component");
+
+  return std::make_unique<BoxCountWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2090,4 +2186,43 @@ PYBIND11_MODULE(_tisean, m)
       "matching the CLI's -r flag. epsf is the growth factor for the\n"
       "search radius. Raises ValueError if some component is constant or\n"
       "has zero variance after rescaling.");
+
+  auto boxcount = m.def_submodule(
+      "boxcount", "Renyi entropy via box partition (source_c/boxcount.c)");
+
+  py::class_<BoxCountWrapper>(boxcount, "BoxCountResult")
+      .def_property_readonly("dimension", &BoxCountWrapper::dimension)
+      .def_property_readonly("maxembed", &BoxCountWrapper::maxembed)
+      .def_property_readonly("epscount", &BoxCountWrapper::epscount)
+      .def_property_readonly("eps", &BoxCountWrapper::eps,
+			      "Epsilon values in the original series' units, "
+			      "shape (epscount,)")
+      .def_property_readonly("entropy", &BoxCountWrapper::entropy,
+			      "Generalized entropy of order q, shape "
+			      "(epscount, dimension*maxembed); column i "
+			      "corresponds to (which_component[i], "
+			      "which_embed[i])")
+      .def_property_readonly("which_component", &BoxCountWrapper::which_component,
+			      "0-based component index per output column, "
+			      "shape (dimension*maxembed,)")
+      .def_property_readonly("which_embed", &BoxCountWrapper::which_embed,
+			      "0-based embedding index per output column, "
+			      "shape (dimension*maxembed,)");
+
+  boxcount.def(
+      "compute", &boxcount_compute_binding, py::arg("series"), py::arg("maxembed") = 10,
+      py::arg("delay") = 1, py::arg("q") = 2.0, py::arg("epsmin") = 1.e-3,
+      py::arg("epsmin_absolute") = false, py::arg("epsmax") = 1.0,
+      py::arg("epsmax_absolute") = false, py::arg("epscount") = 20,
+      "Estimate the generalized (Renyi) entropy of order q of `series`\n"
+      "(shape (dimension, length)) via a recursive box partition, matching\n"
+      "the boxcount CLI's -M (maxembed part)/-d/-Q/-r/-R/-# options. Each\n"
+      "component is independently rescaled to [0,1) internally (the input\n"
+      "array is not modified). epsmin/epsmax are box sizes as fractions of\n"
+      "that rescaled range, unless epsmin_absolute/epsmax_absolute is\n"
+      "True, in which case they are interpreted in the same units as the\n"
+      "raw input data and divided by the largest per-component raw range,\n"
+      "matching the CLI's -r/-R flags (which set epsminset/epsmaxset).\n"
+      "Raises ValueError if series is constant (zero range) for some\n"
+      "component, or too short for the given maxembed/delay.");
 }
