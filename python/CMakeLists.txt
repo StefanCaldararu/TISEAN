@@ -12,8 +12,8 @@ set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2/mutual/
 # extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol/lzo-gm/polynomp/fsle/
-# false_nearest/pca need. Other routines get added here as they get their own
-# reentrant API extracted.
+# false_nearest/pca/delay need. Other routines get added here as they get
+# their own reentrant API extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
   ${TISEAN_ROOT}/source_c/api/ar_model_api.c
@@ -36,6 +36,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/fsle_api.c
   ${TISEAN_ROOT}/source_c/api/false_nearest_api.c
   ${TISEAN_ROOT}/source_c/api/pca_api.c
+  ${TISEAN_ROOT}/source_c/api/delay_api.c
   ${TISEAN_ROOT}/source_c/routines/check_alloc.c
   ${TISEAN_ROOT}/source_c/routines/variance.c
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c

@@ -5,7 +5,7 @@ set(TISEAN_C_PROGRAMS
   lyap_k lyap_spec d2 nrlazy
   lzo-test lfo-run lfo-test rbf polynom polyback
   ghkss lfo-ar boxcount
-  resample nstat_z delay arima-model
+  resample nstat_z arima-model
   lzo-run ar-run
 )
 
@@ -17,8 +17,8 @@ endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema,
 # recurr, xzero, mem_spec, lyap_r, makenoise, sav_gol, lzo-gm, polynomp, fsle,
-# false_nearest, and pca use the reentrant APIs in api/ (also used by the
-# Python bindings under python/) instead of duplicating the math inline.
+# false_nearest, pca, and delay use the reentrant APIs in api/ (also used by
+# the Python bindings under python/) instead of duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
@@ -97,3 +97,7 @@ install(TARGETS false_nearest RUNTIME DESTINATION bin)
 add_executable(pca pca.c api/pca_api.c)
 target_link_libraries(pca PRIVATE ddtsa)
 install(TARGETS pca RUNTIME DESTINATION bin)
+
+add_executable(delay delay.c api/delay_api.c)
+target_link_libraries(delay PRIVATE ddtsa)
+install(TARGETS delay RUNTIME DESTINATION bin)
