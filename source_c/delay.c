@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include "routines/tsa.h"
+#include "../include/delay.h"
 
 #define WID_STR "Produces delay vectors"
 
@@ -293,16 +294,18 @@ int main(int argc,char **argv)
   }
 
   if (stdo) {
+    DelayResult *dvecs;
+
     if (verbosity)
       fprintf(stderr,"Writing to stdout\n");
-    for (i=maxemb;i<length;i++) {
-      rundel=0;
-      for (j=0;j<indim;j++) {
-	emb=formatlist[j];
-	for (k=0;k<emb;k++)
-	  fprintf(stdout,"%e ",series[j][i-inddelay[rundel++]]);
+    dvecs=delay_compute(series,length,indim,formatlist,inddelay);
+    if (dvecs != NULL) {
+      for (i=0;i<dvecs->n_vectors;i++) {
+	for (j=0;j<alldim;j++)
+	  fprintf(stdout,"%e ",dvecs->vectors[i*alldim+j]);
+	fprintf(stdout,"\n");
       }
-      fprintf(stdout,"\n");
+      delay_free(dvecs);
     }
   }
   else {

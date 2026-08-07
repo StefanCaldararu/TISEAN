@@ -30,6 +30,7 @@
 #include "fsle.h"
 #include "false_nearest.h"
 #include "pca.h"
+#include "delay.h"
 
 namespace py = pybind11;
 
@@ -1158,6 +1159,110 @@ pca_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecas
   return std::make_unique<PCAWrapper>(pca);
 }
 
+// Owns a DelayResult* and exposes its fields as numpy arrays. Not copyable
+// since DelayResult doesn't support that; pybind11 holds it by unique_ptr.
+class DelayResultWrapper {
+public:
+  explicit DelayResultWrapper(DelayResult *result) : result_(result) {}
+  DelayResultWrapper(const DelayResultWrapper &) = delete;
+  DelayResultWrapper &operator=(const DelayResultWrapper &) = delete;
+  ~DelayResultWrapper() { delay_free(result_); }
+
+  unsigned int alldim() const { return result_->alldim; }
+  unsigned long n_vectors() const { return result_->n_vectors; }
+
+  py::array_t<double> vectors() const {
+    py::array_t<double> out({(py::ssize_t)result_->n_vectors, (py::ssize_t)result_->alldim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->n_vectors; i++)
+      for (unsigned int j = 0; j < result_->alldim; j++)
+	buf(i, j) = result_->vectors[i * result_->alldim + j];
+    return out;
+  }
+
+private:
+  DelayResult *result_;
+};
+
+std::unique_ptr<DelayResultWrapper>
+delay_embed_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		     unsigned int embdim, py::object format, unsigned int delay,
+		     py::object multidelay)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (indim, length)");
+
+  auto indim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (indim == 0)
+    throw std::invalid_argument("series must have at least one row (shape[0] >= 1)");
+
+  std::vector<double *> rows(indim);
+  for (unsigned int i = 0; i < indim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  std::vector<unsigned int> fmt(indim);
+  if (format.is_none()) {
+    if (embdim % indim != 0)
+      throw std::invalid_argument(
+	  "embdim is not a multiple of series.shape[0]; pass an explicit "
+	  "format array instead");
+    unsigned int per = embdim / indim;
+    for (unsigned int i = 0; i < indim; i++)
+      fmt[i] = per;
+  } else {
+    auto fmt_arr =
+	format.cast<py::array_t<unsigned int, py::array::c_style | py::array::forcecast>>();
+    if (fmt_arr.ndim() != 1 || (unsigned int)fmt_arr.shape(0) != indim)
+      throw std::invalid_argument("format must be a 1D array of length series.shape[0]");
+    for (unsigned int i = 0; i < indim; i++) {
+      fmt[i] = fmt_arr.data()[i];
+      if (fmt[i] < 1)
+	throw std::invalid_argument("every entry of format must be >= 1");
+    }
+  }
+
+  unsigned int alldim = 0;
+  for (unsigned int i = 0; i < indim; i++)
+    alldim += fmt[i];
+
+  std::vector<unsigned int> delays(alldim);
+  unsigned int rundel = 0;
+  if (multidelay.is_none()) {
+    if (delay < 1)
+      throw std::invalid_argument("delay must be >= 1");
+    for (unsigned int i = 0; i < indim; i++) {
+      unsigned int delsum = 0;
+      delays[rundel++] = delsum;
+      for (unsigned int j = 1; j < fmt[i]; j++) {
+	delsum += delay;
+	delays[rundel++] = delsum;
+      }
+    }
+  } else {
+    auto md =
+	multidelay.cast<py::array_t<unsigned int, py::array::c_style | py::array::forcecast>>();
+    if (md.ndim() != 1 || (unsigned int)md.shape(0) != alldim - indim)
+      throw std::invalid_argument(
+	  "multidelay must be a 1D array of length sum(format) - series.shape[0]");
+    unsigned int runmdel = 0;
+    for (unsigned int i = 0; i < indim; i++) {
+      unsigned int delsum = 0;
+      delays[rundel++] = delsum;
+      for (unsigned int j = 1; j < fmt[i]; j++) {
+	delsum += md.data()[runmdel++];
+	delays[rundel++] = delsum;
+      }
+    }
+  }
+
+  DelayResult *result = delay_compute(rows.data(), length, indim, fmt.data(), delays.data());
+  if (result == nullptr)
+    throw std::invalid_argument("format must sum to at least 1");
+
+  return std::make_unique<DelayResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -1674,4 +1779,41 @@ PYBIND11_MODULE(_tisean, m)
       "delayed copies (spaced `delay` apart) before the dim*emb by dim*emb\n"
       "covariance matrix is built. Raises ValueError if the eigenvalue\n"
       "solver fails to converge.");
+
+  auto delay = m.def_submodule(
+      "delay", "Delay-embedding vector construction (source_c/delay.c)");
+
+  py::class_<DelayResultWrapper>(delay, "DelayResult")
+      .def_property_readonly("alldim", &DelayResultWrapper::alldim,
+			      "Total embedding dimension, sum(format)")
+      .def_property_readonly("n_vectors", &DelayResultWrapper::n_vectors,
+			      "Number of delay vectors produced")
+      .def_property_readonly("vectors", &DelayResultWrapper::vectors,
+			      "Delay vectors, shape (n_vectors, alldim)");
+
+  delay.def(
+      "embed", &delay_embed_binding, py::arg("series"), py::arg("embdim") = 2,
+      py::arg("format") = py::none(), py::arg("delay") = 1,
+      py::arg("multidelay") = py::none(),
+      "Build delay-embedding vectors from `series` (shape (indim, "
+      "length)), matching the delay CLI's stdout output (its -m/-F/-d/-D "
+      "options; -M is series.shape[0]).\n\n"
+      "format (the CLI's -F) is a 1D array of indim positive ints giving "
+      "how many embedded coordinates to take from each row of series. If "
+      "not given (None, the default), it is built from embdim (the CLI's "
+      "-m, default 2) split evenly across series.shape[0] rows, matching "
+      "the CLI's default behavior; embdim must then be a multiple of "
+      "series.shape[0].\n\n"
+      "delay (the CLI's -d, default 1) sets a uniform lag spacing between "
+      "consecutive embedded coordinates of every row. multidelay (the "
+      "CLI's -D) overrides this with an explicit 1D array of "
+      "sum(format) - series.shape[0] per-coordinate lags (one for every "
+      "embedded coordinate after the first of each row, concatenated "
+      "across rows in row order); delay is ignored if multidelay is "
+      "given.\n\n"
+      "Output row t is built from input time index t + max(lags): "
+      "coordinate k of the row is series[row][t + max(lags) - lag_k]. "
+      "n_vectors is series.shape[1] - max(lags), or 0 if series.shape[1] "
+      "is not larger than max(lags) (matching the CLI, which then prints "
+      "nothing rather than erroring).");
 }
