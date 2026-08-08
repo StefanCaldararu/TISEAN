@@ -35,6 +35,7 @@
 #include "lzo-test.h"
 #include "boxcount.h"
 #include "nrlazy.h"
+#include "rbf.h"
 
 namespace py = pybind11;
 
@@ -1613,6 +1614,95 @@ nrlazy_correct_binding(py::array_t<double, py::array::c_style | py::array::force
   return std::make_unique<NRLazyResultWrapper>(result);
 }
 
+// Owns an RBFResult* and exposes its fields as numpy arrays. Not copyable
+// since RBFResult doesn't support that; pybind11 holds it by unique_ptr.
+class RBFResultWrapper {
+public:
+  explicit RBFResultWrapper(RBFResult *result) : result_(result) {}
+  RBFResultWrapper(const RBFResultWrapper &) = delete;
+  RBFResultWrapper &operator=(const RBFResultWrapper &) = delete;
+  ~RBFResultWrapper() { rbf_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int delay() const { return result_->delay; }
+  unsigned int centers() const { return result_->centers; }
+  unsigned long step() const { return result_->step; }
+  unsigned long insample() const { return result_->insample; }
+  unsigned long length() const { return result_->length; }
+  double variance() const { return result_->variance; }
+  double insample_error() const { return result_->insample_error; }
+  bool has_outsample_error() const { return result_->has_outsample_error != 0; }
+  double outsample_error() const { return result_->outsample_error; }
+  unsigned long cast_length() const { return result_->cast_length; }
+
+  py::array_t<double> center() const {
+    py::array_t<double> out({(py::ssize_t)result_->centers, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->centers; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->center[i][j];
+    return out;
+  }
+
+  py::array_t<double> coefs() const {
+    py::array_t<double> out((py::ssize_t)(result_->centers + 1));
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i <= result_->centers; i++)
+      buf(i) = result_->coefs[i];
+    return out;
+  }
+
+  py::array_t<double> cast() const {
+    py::array_t<double> out((py::ssize_t)result_->cast_length);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->cast_length; i++)
+      buf(i) = result_->cast[i];
+    return out;
+  }
+
+private:
+  RBFResult *result_;
+};
+
+std::unique_ptr<RBFResultWrapper>
+rbf_fit_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		 unsigned int dim, unsigned int delay, unsigned int centers,
+		 bool drift, unsigned long step, unsigned long insample,
+		 unsigned long cast_length)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+  if (length <= (unsigned long)(dim - 1) * delay)
+    throw std::invalid_argument(
+	"series is too short for dim/delay: length must be > (dim - 1) * delay");
+
+  unsigned int effective_centers = centers > length ? (unsigned int)length : centers;
+  if (effective_centers < 2)
+    throw std::invalid_argument(
+	"not enough centers: min(centers, series length) must be >= 2");
+
+  unsigned long effective_insample = insample > length ? length : insample;
+  if (effective_insample < step)
+    throw std::invalid_argument(
+	"insample (after clamping to the series length) must be >= step");
+
+  RBFError error;
+  RBFResult *result = rbf_fit(series.data(), length, dim, delay, centers,
+			       drift ? 1 : 0, step, insample, cast_length, &error);
+  if (result == nullptr) {
+    if (error == RBF_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance");
+    throw std::invalid_argument("normal-equations matrix is singular");
+  }
+
+  return std::make_unique<RBFResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2334,4 +2424,62 @@ PYBIND11_MODULE(_tisean, m)
       "given, it overwrites whatever r would have produced.\n\n"
       "Raises ValueError if series is constant (zero range) for some "
       "component, or too short for the given embed/delay.");
+
+  auto rbf = m.def_submodule(
+      "rbf", "Radial-basis-function model fit and forecast of a scalar series (source_c/rbf.c)");
+
+  py::class_<RBFResultWrapper>(rbf, "RBFResult")
+      .def_property_readonly("dim", &RBFResultWrapper::dim)
+      .def_property_readonly("delay", &RBFResultWrapper::delay)
+      .def_property_readonly("centers", &RBFResultWrapper::centers,
+			      "Number of RBF centers actually used, i.e. "
+			      "min(centers, series length)")
+      .def_property_readonly("step", &RBFResultWrapper::step)
+      .def_property_readonly("insample", &RBFResultWrapper::insample,
+			      "Number of points actually used to fit the "
+			      "model, i.e. min(insample, series length)")
+      .def_property_readonly("length", &RBFResultWrapper::length)
+      .def_property_readonly("center", &RBFResultWrapper::center,
+			      "RBF center coordinates, shape (centers, dim), "
+			      "in original (unscaled) data units")
+      .def_property_readonly("variance", &RBFResultWrapper::variance,
+			      "RBF kernel width parameter, in original "
+			      "(unscaled) data units")
+      .def_property_readonly("coefs", &RBFResultWrapper::coefs,
+			      "Fitted coefficients, shape (centers+1,); "
+			      "coefs[0] is the intercept, coefs[1:] are the "
+			      "per-center weights")
+      .def_property_readonly("insample_error", &RBFResultWrapper::insample_error,
+			      "Normalized in-sample RMS forecast error")
+      .def_property_readonly("has_outsample_error", &RBFResultWrapper::has_outsample_error,
+			      "Whether outsample_error was computed, i.e. "
+			      "whether insample < series.shape[0]")
+      .def_property_readonly("outsample_error", &RBFResultWrapper::outsample_error,
+			      "Normalized out-of-sample RMS forecast error; "
+			      "0.0 if has_outsample_error is False")
+      .def_property_readonly("cast_length", &RBFResultWrapper::cast_length)
+      .def_property_readonly("cast", &RBFResultWrapper::cast,
+			      "Forecasted values continuing the series, "
+			      "shape (cast_length,), in original units");
+
+  rbf.def(
+      "fit", &rbf_fit_binding, py::arg("series"), py::arg("dim") = 2, py::arg("delay") = 1,
+      py::arg("centers") = 10, py::arg("drift") = true, py::arg("step") = 1,
+      py::arg("insample") = std::numeric_limits<unsigned long>::max(),
+      py::arg("cast_length") = 0,
+      "Fit a radial-basis-function model to `series` (1D) and optionally\n"
+      "forecast it cast_length points forward, matching the rbf CLI's\n"
+      "-m/-d/-p/-X/-s/-n/-L options. centers is clamped to len(series);\n"
+      "the number of centers actually used is returned in the result as\n"
+      "`centers`. drift=True (the CLI's default, drift=False matches -X)\n"
+      "applies a repulsion optimization to the initial evenly-spaced\n"
+      "center placement before fitting. insample selects how much of the\n"
+      "series is used to fit the model; leaving it unset uses the whole\n"
+      "series and leaves outsample_error/has_outsample_error unset,\n"
+      "matching the CLI's default (-n unset). Leaving cast_length at 0\n"
+      "(the CLI's default, i.e. no -L) skips forecasting.\n\n"
+      "Raises ValueError if series is constant, if the normal-equations\n"
+      "matrix for the RBF weights is singular, if dim < 1, if series is\n"
+      "too short for dim/delay, if min(centers, len(series)) < 2, or if\n"
+      "min(insample, len(series)) < step.");
 }
