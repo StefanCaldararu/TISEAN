@@ -12,8 +12,8 @@ set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 # Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2/mutual/
 # extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol/lzo-gm/polynomp/fsle/
-# false_nearest/pca/delay/lyap_k/lzo-test/boxcount need. Other routines get
-# added here as they get their own reentrant API extracted.
+# false_nearest/pca/delay/lyap_k/lzo-test/boxcount/nrlazy need. Other routines
+# get added here as they get their own reentrant API extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
   ${TISEAN_ROOT}/source_c/api/ar_model_api.c
@@ -40,6 +40,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/delay_api.c
   ${TISEAN_ROOT}/source_c/api/lyap_k_api.c
   ${TISEAN_ROOT}/source_c/api/lzo-test_api.c
+  ${TISEAN_ROOT}/source_c/api/nrlazy_api.c
   ${TISEAN_ROOT}/source_c/routines/check_alloc.c
   ${TISEAN_ROOT}/source_c/routines/variance.c
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c
@@ -48,6 +49,8 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/routines/make_box.c
   ${TISEAN_ROOT}/source_c/routines/find_neighbors.c
   ${TISEAN_ROOT}/source_c/routines/make_multi_box.c
+  ${TISEAN_ROOT}/source_c/routines/make_multi_box2.c
+  ${TISEAN_ROOT}/source_c/routines/make_multi_index.c
   ${TISEAN_ROOT}/source_c/routines/find_multi_neighbors.c
   ${TISEAN_ROOT}/source_c/routines/exclude_interval.c
   ${TISEAN_ROOT}/source_c/routines/eigen.c
