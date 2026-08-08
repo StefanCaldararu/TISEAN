@@ -34,6 +34,7 @@
 #include "lyap_k.h"
 #include "lzo-test.h"
 #include "boxcount.h"
+#include "nrlazy.h"
 
 namespace py = pybind11;
 
@@ -1535,6 +1536,83 @@ boxcount_compute_binding(py::array_t<double, py::array::c_style | py::array::for
   return std::make_unique<BoxCountWrapper>(result);
 }
 
+// Owns an NRLazyResult* and exposes its fields as numpy arrays. Not
+// copyable since NRLazyResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class NRLazyResultWrapper {
+public:
+  explicit NRLazyResultWrapper(NRLazyResult *result) : result_(result) {}
+  NRLazyResultWrapper(const NRLazyResultWrapper &) = delete;
+  NRLazyResultWrapper &operator=(const NRLazyResultWrapper &) = delete;
+  ~NRLazyResultWrapper() { nrlazy_free(result_); }
+
+  unsigned int comp() const { return result_->comp; }
+  unsigned long length() const { return result_->length; }
+
+  py::array_t<double> series() const {
+    py::array_t<double> out({(py::ssize_t)result_->comp, (py::ssize_t)result_->length});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->comp; i++)
+      for (unsigned long n = 0; n < result_->length; n++)
+	buf(i, n) = result_->series[i][n];
+    return out;
+  }
+
+  py::array_t<unsigned int> neighbors() const {
+    py::array_t<unsigned int> out((py::ssize_t)result_->length);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long n = 0; n < result_->length; n++)
+      buf(n) = result_->neighbors[n];
+    return out;
+  }
+
+private:
+  NRLazyResult *result_;
+};
+
+std::unique_ptr<NRLazyResultWrapper>
+nrlazy_correct_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			unsigned int embed, unsigned int delay, unsigned int iterations,
+			py::object r, py::object v)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (comp, length)");
+
+  auto comp = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (comp < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+  if (delay < 1)
+    throw std::invalid_argument("delay must be >= 1");
+  if (iterations < 1)
+    throw std::invalid_argument("iterations must be >= 1");
+
+  unsigned long minlen = (unsigned long)(embed - 1) * delay;
+  if (length <= minlen)
+    throw std::invalid_argument(
+	"series too short for the given embed/delay (length must be > "
+	"(embed-1)*delay)");
+
+  std::vector<double *> rows(comp);
+  for (unsigned int i = 0; i < comp; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  double eps_r = r.is_none() ? std::numeric_limits<double>::quiet_NaN() : r.cast<double>();
+  double eps_v = v.is_none() ? std::numeric_limits<double>::quiet_NaN() : v.cast<double>();
+
+  double bad_value = 0.0;
+  NRLazyResult *result = nrlazy_correct(rows.data(), length, comp, embed, delay, iterations,
+					  eps_r, eps_v, &bad_value, nullptr, nullptr);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"series is constant (ranges from " + std::to_string(bad_value) + " to " +
+	std::to_string(bad_value) + ") for some component");
+
+  return std::make_unique<NRLazyResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2225,4 +2303,35 @@ PYBIND11_MODULE(_tisean, m)
       "matching the CLI's -r/-R flags (which set epsminset/epsmaxset).\n"
       "Raises ValueError if series is constant (zero range) for some\n"
       "component, or too short for the given maxembed/delay.");
+
+  auto nrlazy = m.def_submodule(
+      "nrlazy", "Simple multivariate nonlinear noise reduction (source_c/nrlazy.c)");
+
+  py::class_<NRLazyResultWrapper>(nrlazy, "NRLazyResult")
+      .def_property_readonly("comp", &NRLazyResultWrapper::comp)
+      .def_property_readonly("length", &NRLazyResultWrapper::length)
+      .def_property_readonly("series", &NRLazyResultWrapper::series,
+			      "Corrected data, scaled back to the original units, "
+			      "shape (comp, length)")
+      .def_property_readonly("neighbors", &NRLazyResultWrapper::neighbors,
+			      "Number of neighbors found for each point during the "
+			      "last iteration, shape (length,)");
+
+  nrlazy.def(
+      "correct", &nrlazy_correct_binding, py::arg("series"), py::arg("embed") = 5,
+      py::arg("delay") = 1, py::arg("iterations") = 1, py::arg("r") = py::none(),
+      py::arg("v") = py::none(),
+      "Replace every embedded point of `series` (shape (comp, length)) by "
+      "the average of its neighbors in delay-embedding space, matching the "
+      "nrlazy CLI's -m (embedding dim part)/-d/-i/-r/-v options. Each "
+      "component is independently rescaled to [0,1) internally (the input "
+      "array is not modified) before `iterations` correction passes.\n\n"
+      "r is the neighborhood size as a fraction of the largest "
+      "per-component raw data interval (matching the CLI's -r); if not "
+      "given, it defaults to a plain 1.e-3 in the rescaled [0,1) space. v "
+      "is the neighborhood size in units of the largest per-component "
+      "standard deviation of the rescaled data (matching the CLI's -v); if "
+      "given, it overwrites whatever r would have produced.\n\n"
+      "Raises ValueError if series is constant (zero range) for some "
+      "component, or too short for the given embed/delay.");
 }
