@@ -40,6 +40,7 @@
 #include "lzo-run.h"
 #include "lfo-run.h"
 #include "lfo-test.h"
+#include "nstat_z.h"
 
 namespace py = pybind11;
 
@@ -2001,6 +2002,104 @@ lfo_test_forecast_binding(py::array_t<double, py::array::c_style | py::array::fo
   return std::make_unique<LfoTestWrapper>(result);
 }
 
+// Owns an NstatZ* and exposes its fields as numpy arrays. Not copyable
+// since NstatZ doesn't support that; pybind11 holds it by unique_ptr.
+class NstatZWrapper {
+public:
+  explicit NstatZWrapper(NstatZ *result) : result_(result) {}
+  NstatZWrapper(const NstatZWrapper &) = delete;
+  NstatZWrapper &operator=(const NstatZWrapper &) = delete;
+  ~NstatZWrapper() { nstat_z_free(result_); }
+
+  unsigned int pieces() const { return result_->pieces; }
+  unsigned long n_pairs() const { return result_->n_pairs; }
+
+  py::array_t<unsigned int> first() const {
+    py::array_t<unsigned int> out((py::ssize_t)result_->n_pairs);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_pairs; i++)
+      buf(i) = result_->first[i];
+    return out;
+  }
+
+  py::array_t<unsigned int> second() const {
+    py::array_t<unsigned int> out((py::ssize_t)result_->n_pairs);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_pairs; i++)
+      buf(i) = result_->second[i];
+    return out;
+  }
+
+  py::array_t<double> value() const {
+    py::array_t<double> out((py::ssize_t)result_->n_pairs);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_pairs; i++)
+      buf(i) = result_->value[i];
+    return out;
+  }
+
+private:
+  NstatZ *result_;
+};
+
+std::unique_ptr<NstatZWrapper>
+nstat_z_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			 unsigned int pieces, unsigned int dim, unsigned int delay,
+			 unsigned int minn, unsigned long step, py::object causal,
+			 py::object center, py::object first_window,
+			 py::object second_window, py::object first_offset,
+			 py::object second_offset, double eps0, bool epsset, double epsf)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length < 1)
+    throw std::invalid_argument("series must be non-empty");
+  if (pieces < 1)
+    throw std::invalid_argument("pieces must be >= 1");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  py::array_t<char, py::array::c_style | py::array::forcecast> fw_arr, sw_arr;
+  const char *fw_ptr = nullptr;
+  const char *sw_ptr = nullptr;
+  if (!first_window.is_none()) {
+    fw_arr = py::array_t<char, py::array::c_style | py::array::forcecast>::ensure(first_window);
+    if (!fw_arr || fw_arr.ndim() != 1 || (unsigned int)fw_arr.shape(0) != pieces)
+      throw std::invalid_argument("first_window must be a 1D array-like of length pieces");
+    fw_ptr = fw_arr.data();
+  }
+  if (!second_window.is_none()) {
+    sw_arr = py::array_t<char, py::array::c_style | py::array::forcecast>::ensure(second_window);
+    if (!sw_arr || sw_arr.ndim() != 1 || (unsigned int)sw_arr.shape(0) != pieces)
+      throw std::invalid_argument("second_window must be a 1D array-like of length pieces");
+    sw_ptr = sw_arr.data();
+  }
+
+  int resolved_first_offset = first_offset.is_none() ? -1 : first_offset.cast<int>();
+  int resolved_second_offset = second_offset.is_none() ? -1 : second_offset.cast<int>();
+  unsigned long resolved_causal = causal.is_none() ? step : causal.cast<unsigned long>();
+  char centerset = center.is_none() ? 0 : 1;
+  unsigned long resolved_center = center.is_none() ? 0 : center.cast<unsigned long>();
+
+  NstatZError error;
+  NstatZ *result = nstat_z_compute(series.data(), length, pieces, fw_ptr, sw_ptr,
+				    resolved_first_offset, resolved_second_offset, dim,
+				    delay, minn, step, resolved_causal, resolved_center,
+				    centerset, eps0, epsset ? 1 : 0, epsf, &error);
+  if (result == nullptr) {
+    if (error == NSTAT_Z_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range)");
+    if (error == NSTAT_Z_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("some piece of series has zero variance");
+    throw std::invalid_argument(
+	"pieces is too large: a piece has fewer than minn usable reference points");
+  }
+
+  return std::make_unique<NstatZWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2916,4 +3015,55 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if a component of series is constant (zero "
       "range), if comp < 1, embed < 1, series is empty, or series is too "
       "short for embed/delay/minn.");
+
+  auto nstat_z = m.def_submodule(
+      "nstat_z", "Nonstationarity test via zeroth-order forecast error between "
+		 "piece pairs (source_c/nstat_z.c)");
+
+  py::class_<NstatZWrapper>(nstat_z, "NstatZ")
+      .def_property_readonly("pieces", &NstatZWrapper::pieces)
+      .def_property_readonly("n_pairs", &NstatZWrapper::n_pairs)
+      .def_property_readonly("first", &NstatZWrapper::first,
+			      "0-indexed piece used to fit the zeroth-order model, "
+			      "shape (n_pairs,)")
+      .def_property_readonly("second", &NstatZWrapper::second,
+			      "0-indexed piece the fit is tested against, "
+			      "shape (n_pairs,)")
+      .def_property_readonly("value", &NstatZWrapper::value,
+			      "rms forecast error of the `first` piece's fit on "
+			      "`second`'s reference points, divided by `second`'s "
+			      "own rms, shape (n_pairs,)");
+
+  nstat_z.def(
+      "compute", &nstat_z_compute_binding, py::arg("series"), py::arg("pieces"),
+      py::arg("dim") = 3, py::arg("delay") = 1, py::arg("minn") = 30,
+      py::arg("step") = 1, py::arg("causal") = py::none(), py::arg("center") = py::none(),
+      py::arg("first_window") = py::none(), py::arg("second_window") = py::none(),
+      py::arg("first_offset") = py::none(), py::arg("second_offset") = py::none(),
+      py::arg("eps0") = 1.e-3, py::arg("epsset") = false, py::arg("epsf") = 1.2,
+      "Test `series` (1D) for nonstationarity by splitting it into `pieces` "
+      "equal-length segments and, for each selected pair of segments "
+      "(first, second), fitting a zeroth-order model on `first` and "
+      "measuring its rms forecast error on `second`'s reference points, "
+      "scaled by `second`'s own rms - matching the nstat_z CLI's "
+      "-#/-m/-d/-k/-s/-C/-n/-r/-f options.\n\n"
+      "causal defaults to step (the CLI's default when -C is not given). "
+      "center defaults to using every point of a piece as a reference "
+      "point, clamped to fit (the CLI's default when -n is not given).\n\n"
+      "first_window/second_window are optional length-`pieces` 0/1 "
+      "arrays selecting which pieces are candidates for the 'first' "
+      "(fitted) and 'second' (tested-against) role, matching the CLI's "
+      "-1/-2 options with a plain (non \"+offset\") argument; None means "
+      "all pieces (the CLI's default). first_offset/second_offset are the "
+      "CLI's -1/-2 in \"+N\" form (a window of pieces within N of the "
+      "other index); when given, they take precedence over "
+      "first_window/second_window for the corresponding role, exactly "
+      "like the CLI.\n\n"
+      "If epsset is True, eps0 is interpreted in the original (raw) data "
+      "units, matching the CLI's -r; otherwise it is used as-is in the "
+      "internally-rescaled [0,1) space.\n\n"
+      "Raises ValueError if series is constant (zero range), if some "
+      "piece has zero variance, if pieces leaves fewer than minn usable "
+      "reference points per piece, if pieces < 1 or dim < 1, or if "
+      "first_window/second_window is not a length-`pieces` array.");
 }
