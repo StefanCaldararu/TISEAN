@@ -38,6 +38,7 @@
 #include "rbf.h"
 #include "lfo-ar.h"
 #include "lzo-run.h"
+#include "lfo-run.h"
 
 namespace py = pybind11;
 
@@ -1867,6 +1868,72 @@ lzo_run_forecast_binding(py::array_t<double, py::array::c_style | py::array::for
   return std::make_unique<LzoRunWrapper>(result);
 }
 
+// Owns an LfoRun* and exposes its fields as numpy arrays. Not copyable
+// since LfoRun doesn't support that; pybind11 holds it by unique_ptr.
+class LfoRunWrapper {
+public:
+  explicit LfoRunWrapper(LfoRun *result) : result_(result) {}
+  LfoRunWrapper(const LfoRunWrapper &) = delete;
+  LfoRunWrapper &operator=(const LfoRunWrapper &) = delete;
+  ~LfoRunWrapper() { lfo_run_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned long length() const { return result_->length; }
+
+  py::array_t<double> series() const {
+    py::array_t<double> out({(py::ssize_t)result_->length, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->length; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->series[i * result_->dim + j];
+    return out;
+  }
+
+private:
+  LfoRun *result_;
+};
+
+std::unique_ptr<LfoRunWrapper>
+lfo_run_forecast_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned int embed, unsigned int delay, unsigned int minn,
+			   bool zeroth_order, unsigned long flength, double eps0,
+			   bool epsset, double epsf)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+
+  unsigned long minlen = (unsigned long)(embed - 1) * delay;
+  if (length <= minlen)
+    throw std::invalid_argument(
+	"series too short for the given embed/delay (length must be > "
+	"(embed-1)*delay)");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  LfoRunError error;
+  LfoRun *result = lfo_run_forecast(rows.data(), length, dim, embed, delay, minn,
+				     zeroth_order ? 1 : 0, flength, eps0,
+				     epsset ? 1 : 0, epsf, &error);
+  if (result == nullptr)
+    throw std::invalid_argument("series is constant (zero range) for some component");
+  if (error == LFO_RUN_ERR_ESCAPED_REGION) {
+    lfo_run_free(result);
+    throw std::invalid_argument(
+	"forecast escaped the data region before completing flength iterations");
+  }
+
+  return std::make_unique<LfoRunWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2723,4 +2790,29 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if series is constant (zero range) for some "
       "component, if series has zero variance for some component, if "
       "dim < 1, embed < 1, or series is too short for embed/delay.");
+
+  auto lfo_run = m.def_submodule(
+      "lfo_run", "Iterated local-linear (or zeroth order) forecast (source_c/lfo-run.c)");
+
+  py::class_<LfoRunWrapper>(lfo_run, "LfoRun")
+      .def_property_readonly("dim", &LfoRunWrapper::dim)
+      .def_property_readonly("length", &LfoRunWrapper::length,
+			      "Number of iterated forecast points (the CLI's -L)")
+      .def_property_readonly("series", &LfoRunWrapper::series,
+			      "Iterated forecast trajectory, shape (length, dim), "
+			      "in original (unscaled) data units");
+
+  lfo_run.def(
+      "forecast", &lfo_run_forecast_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("minn") = 30, py::arg("zeroth_order") = false,
+      py::arg("flength") = 1000, py::arg("eps0") = 1.e-3, py::arg("epsset") = false,
+      py::arg("epsf") = 1.2,
+      "Iterate a local-linear (or, if zeroth_order, a zeroth order) forecast\n"
+      "forward `flength` steps from `series` (shape (dim, length)), matching\n"
+      "the lfo-run CLI's -m/-d/-k/-0/-L/-r/-f options.\n\n"
+      "Raises ValueError if series is constant (zero range) for some "
+      "component, if the iterated forecast escapes the data region before "
+      "completing flength iterations (matching the CLI's own \"Forecast "
+      "failed. Escaping data region!\" exit), if dim < 1, embed < 1, or "
+      "series is too short for embed/delay.");
 }
