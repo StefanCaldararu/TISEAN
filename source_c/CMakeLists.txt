@@ -6,7 +6,7 @@ set(TISEAN_C_PROGRAMS
   lfo-run lfo-test polynom polyback
   ghkss
   resample nstat_z arima-model
-  lzo-run ar-run
+  ar-run
 )
 
 foreach(prog ${TISEAN_C_PROGRAMS})
@@ -17,9 +17,9 @@ endforeach()
 
 # ar-model, low121, histogram, polypar, corr, xcor, av-d2, mutual, extrema,
 # recurr, xzero, mem_spec, lyap_r, makenoise, sav_gol, lzo-gm, polynomp, fsle,
-# false_nearest, pca, delay, lyap_k, lzo-test, boxcount, nrlazy, rbf, and
-# lfo-ar use the reentrant APIs in api/ (also used by the Python bindings
-# under python/) instead of duplicating the math inline.
+# false_nearest, pca, delay, lyap_k, lzo-test, boxcount, nrlazy, rbf, lfo-ar,
+# and lzo-run use the reentrant APIs in api/ (also used by the Python
+# bindings under python/) instead of duplicating the math inline.
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
@@ -126,3 +126,7 @@ install(TARGETS rbf RUNTIME DESTINATION bin)
 add_executable(lfo-ar lfo-ar.c api/lfo-ar_api.c)
 target_link_libraries(lfo-ar PRIVATE ddtsa)
 install(TARGETS lfo-ar RUNTIME DESTINATION bin)
+
+add_executable(lzo-run lzo-run.c api/lzo-run_api.c)
+target_link_libraries(lzo-run PRIVATE ddtsa)
+install(TARGETS lzo-run RUNTIME DESTINATION bin)
