@@ -42,6 +42,7 @@
 #include "lfo-test.h"
 #include "nstat_z.h"
 #include "ghkss.h"
+#include "lyap_spec.h"
 
 namespace py = pybind11;
 
@@ -2237,6 +2238,89 @@ ghkss_reduce_binding(py::array_t<double, py::array::c_style | py::array::forceca
   return std::make_unique<GHKSSResultWrapper>(result);
 }
 
+// Owns a LyapSpec* and exposes its fields as numpy arrays/scalars. Not
+// copyable since LyapSpec doesn't support that; pybind11 holds it by
+// unique_ptr.
+class LyapSpecWrapper {
+public:
+  explicit LyapSpecWrapper(LyapSpec *result) : result_(result) {}
+  LyapSpecWrapper(const LyapSpecWrapper &) = delete;
+  LyapSpecWrapper &operator=(const LyapSpecWrapper &) = delete;
+  ~LyapSpecWrapper() { lyap_spec_free(result_); }
+
+  unsigned int dimension() const { return result_->dimension; }
+  unsigned int embed() const { return result_->embed; }
+  unsigned int alldim() const { return result_->alldim; }
+  unsigned long count() const { return result_->count; }
+  double avg_neighborhood_size() const { return result_->avg_neighborhood_size; }
+  double avg_num_neighbors() const { return result_->avg_num_neighbors; }
+  double ky_dimension() const { return result_->ky_dimension; }
+
+  py::array_t<double> exponents() const {
+    py::array_t<double> out((py::ssize_t)result_->alldim);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->alldim; i++)
+      buf(i) = result_->exponents[i];
+    return out;
+  }
+
+  py::array_t<double> rel_forecast_error() const {
+    py::array_t<double> out((py::ssize_t)result_->dimension);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->dimension; i++)
+      buf(i) = result_->rel_forecast_error[i];
+    return out;
+  }
+
+  py::array_t<double> abs_forecast_error() const {
+    py::array_t<double> out((py::ssize_t)result_->dimension);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->dimension; i++)
+      buf(i) = result_->abs_forecast_error[i];
+    return out;
+  }
+
+private:
+  LyapSpec *result_;
+};
+
+std::unique_ptr<LyapSpecWrapper>
+lyap_spec_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned int embed, unsigned long iterations, double epsmin,
+			   bool epsset, double epsstep, unsigned int minneighbors, bool inverse)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dimension, length)");
+
+  auto dimension = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  if (dimension < 1)
+    throw std::invalid_argument("series must have at least one row (dimension >= 1)");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+  if (length <= (unsigned long)(embed - 1))
+    throw std::invalid_argument(
+	"series too short for the given embed (length must be > embed-1)");
+  if (minneighbors < 1 || minneighbors > (length - (unsigned long)(embed - 1) - 1))
+    throw std::invalid_argument(
+	"minneighbors must be >= 1 and series long enough to find that many neighbors");
+
+  std::vector<double *> rows(dimension);
+  for (unsigned int i = 0; i < dimension; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  LyapSpec *result =
+      lyap_spec_compute(rows.data(), length, dimension, embed, iterations, epsmin,
+			 epsset ? 1 : 0, epsstep, minneighbors, inverse ? 1 : 0, nullptr, nullptr);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"every row of series must be non-constant, and enough neighbors must be "
+	"found for every reference point even after growing the search radius up to 1.0");
+
+  return std::make_unique<LyapSpecWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -3263,4 +3347,50 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if series.shape[1] < minn, if some component of "
       "series is constant (zero range), or if the eigenvalue solver fails "
       "to converge for some point's local correction matrix.");
+
+  auto lyap_spec = m.def_submodule(
+      "lyap_spec", "Spectrum of Lyapunov exponents via Sano-Sawada (source_c/lyap_spec.c)");
+
+  py::class_<LyapSpecWrapper>(lyap_spec, "LyapSpecResult")
+      .def_property_readonly("dimension", &LyapSpecWrapper::dimension)
+      .def_property_readonly("embed", &LyapSpecWrapper::embed)
+      .def_property_readonly("alldim", &LyapSpecWrapper::alldim,
+			      "Number of Lyapunov exponents, dimension*embed")
+      .def_property_readonly("count", &LyapSpecWrapper::count,
+			      "Number of iterations actually performed")
+      .def_property_readonly("exponents", &LyapSpecWrapper::exponents,
+			      "Final average Lyapunov exponents, shape (alldim,)")
+      .def_property_readonly("rel_forecast_error", &LyapSpecWrapper::rel_forecast_error,
+			      "Average relative one-step-ahead forecast error per "
+			      "component, shape (dimension,)")
+      .def_property_readonly("abs_forecast_error", &LyapSpecWrapper::abs_forecast_error,
+			      "Average absolute one-step-ahead forecast error per "
+			      "component, shape (dimension,)")
+      .def_property_readonly("avg_neighborhood_size", &LyapSpecWrapper::avg_neighborhood_size)
+      .def_property_readonly("avg_num_neighbors", &LyapSpecWrapper::avg_num_neighbors)
+      .def_property_readonly("ky_dimension", &LyapSpecWrapper::ky_dimension,
+			      "Estimated Kaplan-Yorke dimension");
+
+  lyap_spec.def(
+      "compute", &lyap_spec_compute_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("iterations") = std::numeric_limits<unsigned long>::max(),
+      py::arg("epsmin") = 1.e-3, py::arg("epsset") = false, py::arg("epsstep") = 1.2,
+      py::arg("minneighbors") = 30, py::arg("inverse") = false,
+      "Estimates the spectrum of Lyapunov exponents of `series` (shape "
+      "(dimension, length)) via the method of Sano and Sawada, matching the "
+      "lyap_spec CLI's -m (embed part)/-r/-f/-k/-n/-I options. Each row of "
+      "series is rescaled to [0,1) internally (the input array is not "
+      "modified); if inverse=True, the rescaled copy is also time-reversed, "
+      "matching the CLI's -I. iterations defaults to effectively unbounded, "
+      "matching the CLI's own default of running over the whole usable data "
+      "range (internally clamped to length-1).\n\n"
+      "If epsset is True, epsmin is interpreted in the original (raw) data "
+      "units and divided by the largest per-row raw data range, matching "
+      "the CLI's -r; otherwise it is ignored and 1/1000 is used in the "
+      "internally-rescaled [0,1) space instead, matching the CLI's own "
+      "default (unset -r).\n\n"
+      "Raises ValueError if series is not 2D, if embed < 1, if series is "
+      "too short for the given embed/minneighbors, if some row of series "
+      "is constant (zero range), or if not enough neighbors are found for "
+      "some reference point even after growing the search radius to 1.0.");
 }
