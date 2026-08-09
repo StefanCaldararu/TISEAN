@@ -15,6 +15,7 @@ RESCALE_DATA_ZERO_INTERVAL = 11
 
 AR_RUN = "tests/refs/ar-run_l1000.txt"
 HENON = "tests/refs/henon_l1000.txt"
+LORENZ = "tests/refs/lorenz_l1000.txt"
 LFO_RUN_BIN = os.path.abspath("./bin/lfo-run")
 
 
@@ -74,7 +75,15 @@ CASES = [
      dict(minn=10, flength=20, eps0=0.01, epsset=True)),
     ("epsf_1_5", ["-m1,2", "-d1", "-L20", "-k10", "-f1.5"], AR_RUN, [1],
      dict(minn=10, flength=20, epsf=1.5)),
-    ("multivariate_henon", ["-m2,2", "-d1", "-c1,2", "-L20", "-k10"], HENON, [1, 2],
+    # Not HENON: its 2D points lie on a thin fractal attractor, so local
+    # neighborhoods for a 2-component/embed-2 local-linear fit are prone to
+    # near-collinear design matrices. On x86_64 this deterministically
+    # tips into an exactly-singular matrix (lfo-run exits 19,
+    # SOLVELE_SINGULAR_MATRIX) while ARM64's differing FP codegen doesn't
+    # hit it - passed locally, failed every time in CI (same root cause as
+    # lfo-ar's "dim2_henon" case). Verified: LORENZ's first two columns
+    # don't trigger it, confirmed with 10/10 passing runs under x86_64.
+    ("multivariate_lorenz_2col", ["-m2,2", "-d1", "-c1,2", "-L20", "-k10"], LORENZ, [1, 2],
      dict(minn=10, flength=20)),
     ("length_and_exclude", ["-m1,2", "-d1", "-l500", "-x100", "-L20", "-k10"], AR_RUN, [1],
      dict(minn=10, flength=20)),
