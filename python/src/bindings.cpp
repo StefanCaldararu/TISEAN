@@ -41,6 +41,7 @@
 #include "lfo-run.h"
 #include "lfo-test.h"
 #include "nstat_z.h"
+#include "ghkss.h"
 
 namespace py = pybind11;
 
@@ -2100,6 +2101,142 @@ nstat_z_compute_binding(py::array_t<double, py::array::c_style | py::array::forc
   return std::make_unique<NstatZWrapper>(result);
 }
 
+// Owns a GHKSSResult* and exposes its per-iteration fields as numpy arrays.
+// Not copyable since GHKSSResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class GHKSSResultWrapper {
+public:
+  explicit GHKSSResultWrapper(GHKSSResult *result) : result_(result) {}
+  GHKSSResultWrapper(const GHKSSResultWrapper &) = delete;
+  GHKSSResultWrapper &operator=(const GHKSSResultWrapper &) = delete;
+  ~GHKSSResultWrapper() { ghkss_free(result_); }
+
+  unsigned int comp() const { return result_->comp; }
+  unsigned long length() const { return result_->length; }
+  unsigned int n_iterations() const { return result_->iterations; }
+
+  py::array_t<double> series() const {
+    unsigned int iters = result_->iterations, comp = result_->comp;
+    unsigned long length = result_->length;
+    py::array_t<double> out({(py::ssize_t)iters, (py::ssize_t)comp, (py::ssize_t)length});
+    auto buf = out.mutable_unchecked<3>();
+    for (unsigned int it = 0; it < iters; it++)
+      for (unsigned int c = 0; c < comp; c++)
+	for (unsigned long i = 0; i < length; i++)
+	  buf(it, c, i) = result_->iters[it].series[c][i];
+    return out;
+  }
+
+  py::array_t<double> shift() const {
+    unsigned int iters = result_->iterations, comp = result_->comp;
+    py::array_t<double> out({(py::ssize_t)iters, (py::ssize_t)comp});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int it = 0; it < iters; it++)
+      for (unsigned int c = 0; c < comp; c++)
+	buf(it, c) = result_->iters[it].shift[c];
+    return out;
+  }
+
+  py::array_t<double> rms() const {
+    unsigned int iters = result_->iterations, comp = result_->comp;
+    py::array_t<double> out({(py::ssize_t)iters, (py::ssize_t)comp});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int it = 0; it < iters; it++)
+      for (unsigned int c = 0; c < comp; c++)
+	buf(it, c) = result_->iters[it].rms[c];
+    return out;
+  }
+
+  py::array_t<bool> mineps_reset() const {
+    unsigned int iters = result_->iterations;
+    py::array_t<bool> out((py::ssize_t)iters);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int it = 0; it < iters; it++)
+      buf(it) = result_->iters[it].mineps_reset != 0;
+    return out;
+  }
+
+  py::array_t<double> mineps_after() const {
+    unsigned int iters = result_->iterations;
+    py::array_t<double> out((py::ssize_t)iters);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int it = 0; it < iters; it++)
+      buf(it) = result_->iters[it].mineps_after;
+    return out;
+  }
+
+  std::pair<py::array_t<double>, py::array_t<long>> correction_steps(unsigned int iteration) const {
+    if (iteration >= result_->iterations)
+      throw std::out_of_range("iteration must be < n_iterations");
+    const GHKSSIteration &it = result_->iters[iteration];
+    py::array_t<double> eps((py::ssize_t)it.n_correction_steps);
+    py::array_t<long> count((py::ssize_t)it.n_correction_steps);
+    auto ebuf = eps.mutable_unchecked<1>();
+    auto cbuf = count.mutable_unchecked<1>();
+    for (unsigned long s = 0; s < it.n_correction_steps; s++) {
+      ebuf(s) = it.correction_steps[s].epsilon;
+      cbuf(s) = (long)it.correction_steps[s].count;
+    }
+    return {eps, count};
+  }
+
+  std::pair<py::array_t<double>, py::array_t<long>> trend_steps(unsigned int iteration) const {
+    if (iteration >= result_->iterations)
+      throw std::out_of_range("iteration must be < n_iterations");
+    const GHKSSIteration &it = result_->iters[iteration];
+    py::array_t<double> eps((py::ssize_t)it.n_trend_steps);
+    py::array_t<long> count((py::ssize_t)it.n_trend_steps);
+    auto ebuf = eps.mutable_unchecked<1>();
+    auto cbuf = count.mutable_unchecked<1>();
+    for (unsigned long s = 0; s < it.n_trend_steps; s++) {
+      ebuf(s) = it.trend_steps[s].epsilon;
+      cbuf(s) = (long)it.trend_steps[s].count;
+    }
+    return {eps, count};
+  }
+
+private:
+  GHKSSResult *result_;
+};
+
+std::unique_ptr<GHKSSResultWrapper>
+ghkss_reduce_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		      unsigned int embed, unsigned int delay, unsigned int qdim,
+		      unsigned int minn, py::object mineps, unsigned int iterations,
+		      bool euclidean)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (comp, length)");
+
+  auto comp = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(comp);
+  for (unsigned int i = 0; i < comp; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  char eps_set = mineps.is_none() ? 0 : 1;
+  double mineps_val = mineps.is_none() ? 0.0 : mineps.cast<double>();
+
+  GHKSSError error;
+  double bad_value = 0.0;
+  GHKSSResult *result = ghkss_reduce(rows.data(), length, comp, embed, delay, qdim, minn,
+				      mineps_val, eps_set, iterations, euclidean ? 1 : 0,
+				      &error, &bad_value);
+  if (result == nullptr) {
+    if (error == GHKSS_ERR_TOO_MANY_NEIGHBORS)
+      throw std::invalid_argument("series.shape[1] must be >= minn (can never find minn neighbors)");
+    if (error == GHKSS_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument(
+	  "a component of series is constant (ranges from " + std::to_string(bad_value) +
+	  " to " + std::to_string(bad_value) + ")");
+    throw std::invalid_argument(
+	"the eigenvalue solver failed to converge for some point's local correction matrix");
+  }
+
+  return std::make_unique<GHKSSResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -3066,4 +3203,64 @@ PYBIND11_MODULE(_tisean, m)
       "piece has zero variance, if pieces leaves fewer than minn usable "
       "reference points per piece, if pieces < 1 or dim < 1, or if "
       "first_window/second_window is not a length-`pieces` array.");
+
+  auto ghkss = m.def_submodule(
+      "ghkss", "Multivariate noise reduction using the GHKSS algorithm (source_c/ghkss.c)");
+
+  py::class_<GHKSSResultWrapper>(ghkss, "GHKSSResult")
+      .def_property_readonly("comp", &GHKSSResultWrapper::comp)
+      .def_property_readonly("length", &GHKSSResultWrapper::length,
+			      "Length of the input series")
+      .def_property_readonly("n_iterations", &GHKSSResultWrapper::n_iterations)
+      .def_property_readonly("series", &GHKSSResultWrapper::series,
+			      "Corrected series after each iteration, shape "
+			      "(n_iterations, comp, length), in original "
+			      "(unscaled) data units")
+      .def_property_readonly("shift", &GHKSSResultWrapper::shift,
+			      "Average shift applied to each component by "
+			      "each iteration, shape (n_iterations, comp), "
+			      "in original (unscaled) data units")
+      .def_property_readonly("rms", &GHKSSResultWrapper::rms,
+			      "Average rms size of the correction applied to "
+			      "each component by each iteration, shape "
+			      "(n_iterations, comp), in original (unscaled) "
+			      "data units")
+      .def_property_readonly(
+	  "mineps_reset", &GHKSSResultWrapper::mineps_reset,
+	  "Whether the minimal neighborhood size was halved for the "
+	  "following iteration, shape (n_iterations,)")
+      .def_property_readonly(
+	  "mineps_after", &GHKSSResultWrapper::mineps_after,
+	  "Minimal neighborhood size used to start the following "
+	  "iteration (or that would have been used, for the last "
+	  "iteration), shape (n_iterations,), in original (unscaled) "
+	  "data units")
+      .def("correction_steps", &GHKSSResultWrapper::correction_steps, py::arg("iteration"),
+	   "Returns (epsilon, count) for the given 0-indexed iteration: the "
+	   "neighborhood sizes tried while searching for enough neighbors "
+	   "to correct every point, and the cumulative number of points "
+	   "corrected once each size was reached.")
+      .def("trend_steps", &GHKSSResultWrapper::trend_steps, py::arg("iteration"),
+	   "Returns (epsilon, count) for the given 0-indexed iteration: the "
+	   "neighborhood sizes used while evaluating and removing the "
+	   "trend, and the cumulative number of points trend-subtracted "
+	   "once each size was reached.");
+
+  ghkss.def(
+      "reduce", &ghkss_reduce_binding, py::arg("series"), py::arg("embed") = 5,
+      py::arg("delay") = 1, py::arg("qdim") = 2, py::arg("minn") = 50,
+      py::arg("mineps") = py::none(), py::arg("iterations") = 1,
+      py::arg("euclidean") = false,
+      "Performs multivariate noise reduction on `series` (shape (comp, "
+      "length)) via the GHKSS algorithm, matching the ghkss CLI's "
+      "-m (embedding dim part)/-d/-q/-k/-r/-i/-2 options over `iterations` "
+      "passes. Each component of series is independently rescaled to "
+      "[0,1) internally (the input array is not modified).\n\n"
+      "mineps is the minimal neighborhood size to start with, in original "
+      "(raw) data units, matching the CLI's -r; the default of None uses "
+      "1/1000 in the internally-rescaled [0,1) space, matching the CLI's "
+      "own default (unset -r).\n\n"
+      "Raises ValueError if series.shape[1] < minn, if some component of "
+      "series is constant (zero range), or if the eigenvalue solver fails "
+      "to converge for some point's local correction matrix.");
 }
