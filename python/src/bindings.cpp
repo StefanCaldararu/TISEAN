@@ -36,6 +36,7 @@
 #include "boxcount.h"
 #include "nrlazy.h"
 #include "rbf.h"
+#include "lfo-ar.h"
 
 namespace py = pybind11;
 
@@ -858,6 +859,99 @@ lzo_gm_compute_binding(py::array_t<double, py::array::c_style | py::array::force
 	"[0, series.shape[1]), or iterations < step");
 
   return std::make_unique<LzoGmResultWrapper>(result);
+}
+
+// Owns an LfoArResult* and exposes its fields as numpy arrays. Not copyable
+// since LfoArResult doesn't support that; pybind11 holds it by unique_ptr.
+class LfoArResultWrapper {
+public:
+  explicit LfoArResultWrapper(LfoArResult *result) : result_(result) {}
+  LfoArResultWrapper(const LfoArResultWrapper &) = delete;
+  LfoArResultWrapper &operator=(const LfoArResultWrapper &) = delete;
+  ~LfoArResultWrapper() { lfo_ar_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned long n_rows() const { return result_->n_rows; }
+
+  py::array_t<double> epsilon() const {
+    py::array_t<double> out((py::ssize_t)result_->n_rows);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_rows; i++)
+      buf(i) = result_->epsilon[i];
+    return out;
+  }
+
+  py::array_t<double> avg_error() const {
+    py::array_t<double> out((py::ssize_t)result_->n_rows);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_rows; i++)
+      buf(i) = result_->avg_error[i];
+    return out;
+  }
+
+  py::array_t<double> error() const {
+    py::array_t<double> out({(py::ssize_t)result_->n_rows, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->n_rows; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->error[i * result_->dim + j];
+    return out;
+  }
+
+  py::array_t<double> fraction() const {
+    py::array_t<double> out((py::ssize_t)result_->n_rows);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_rows; i++)
+      buf(i) = result_->fraction[i];
+    return out;
+  }
+
+  py::array_t<double> avneighbors() const {
+    py::array_t<double> out((py::ssize_t)result_->n_rows);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->n_rows; i++)
+      buf(i) = result_->avneighbors[i];
+    return out;
+  }
+
+private:
+  LfoArResult *result_;
+};
+
+std::unique_ptr<LfoArResultWrapper>
+lfo_ar_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			unsigned int embed, unsigned int delay, int step,
+			py::object causal, py::object iterations,
+			double eps0, bool eps0_raw, double eps1, bool eps1_raw,
+			double epsf)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  unsigned long resolved_causal =
+      causal.is_none() ? (step < 0 ? 0UL : (unsigned long)step) : causal.cast<unsigned long>();
+  unsigned long resolved_iterations = iterations.is_none() ? length : iterations.cast<unsigned long>();
+
+  double bad_value = 0.0;
+  LfoArResult *result = lfo_ar_compute(rows.data(), length, dim, embed, delay, step,
+					resolved_causal, resolved_iterations,
+					eps0, eps0_raw ? 1 : 0, eps1, eps1_raw ? 1 : 0, epsf,
+					&bad_value);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"either a dimension of series is constant (ranges from " +
+	std::to_string(bad_value) + " to " + std::to_string(bad_value) +
+	"), or dim/embed/series.shape[1] is 0, or step is not in "
+	"[0, series.shape[1]), or iterations < step");
+
+  return std::make_unique<LfoArResultWrapper>(result);
 }
 
 // Owns a PolynompResult* and exposes its fields as numpy arrays. Not
@@ -2076,6 +2170,50 @@ PYBIND11_MODULE(_tisean, m)
       "Estimate, for a growing sequence of neighborhood sizes, the average\n"
       "forecast error of a local-constant fit on `series` (shape (dim,\n"
       "length)), matching the lzo-gm CLI's -m (embedding dimension part)/\n"
+      "-d/-s/-C/-i/-r/-R/-f options. Each dimension is independently\n"
+      "rescaled to [0,1) internally (the input array is not modified). causal\n"
+      "(the CLI's -C) defaults to `step` if not given (None), matching the\n"
+      "CLI's default (unset -C). iterations (the CLI's -i) defaults to\n"
+      "series.shape[1] if not given (None), matching the CLI's default of\n"
+      "the whole series. eps0/eps1 are in rescaled [0,1) units unless\n"
+      "eps0_raw/eps1_raw is True, in which case the respective value is\n"
+      "interpreted in the original (raw) data units and divided by the\n"
+      "largest per-dimension raw interval before use, matching the CLI's\n"
+      "-r/-R flags.");
+
+  auto lfo_ar = m.def_submodule(
+      "lfo_ar", "Average local-linear (AR) forecast error vs. neighborhood size (source_c/lfo-ar.c)");
+
+  py::class_<LfoArResultWrapper>(lfo_ar, "LfoArResult")
+      .def_property_readonly("dim", &LfoArResultWrapper::dim)
+      .def_property_readonly("n_rows", &LfoArResultWrapper::n_rows,
+			      "Number of qualifying neighborhood sizes (only "
+			      "sizes with more than one contributing point "
+			      "are kept, matching the CLI's own row filter)")
+      .def_property_readonly("epsilon", &LfoArResultWrapper::epsilon,
+			      "Neighborhood size in raw data units, shape (n_rows,)")
+      .def_property_readonly("avg_error", &LfoArResultWrapper::avg_error,
+			      "Relative forecast error averaged over all dim "
+			      "components, shape (n_rows,)")
+      .def_property_readonly("error", &LfoArResultWrapper::error,
+			      "Relative forecast error per component, shape "
+			      "(n_rows, dim)")
+      .def_property_readonly("fraction", &LfoArResultWrapper::fraction,
+			      "Fraction of scanned points that had enough "
+			      "neighbors to contribute, shape (n_rows,)")
+      .def_property_readonly("avneighbors", &LfoArResultWrapper::avneighbors,
+			      "Average number of neighbors found per "
+			      "contributing point, shape (n_rows,)");
+
+  lfo_ar.def(
+      "compute", &lfo_ar_compute_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("step") = 1, py::arg("causal") = py::none(),
+      py::arg("iterations") = py::none(), py::arg("eps0") = 1.e-3,
+      py::arg("eps0_raw") = false, py::arg("eps1") = 1.0, py::arg("eps1_raw") = false,
+      py::arg("epsf") = 1.2,
+      "Estimate, for a growing sequence of neighborhood sizes, the average\n"
+      "forecast error of a local-linear (AR) fit on `series` (shape (dim,\n"
+      "length)), matching the lfo-ar CLI's -m (embedding dimension part)/\n"
       "-d/-s/-C/-i/-r/-R/-f options. Each dimension is independently\n"
       "rescaled to [0,1) internally (the input array is not modified). causal\n"
       "(the CLI's -C) defaults to `step` if not given (None), matching the\n"
