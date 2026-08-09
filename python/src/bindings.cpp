@@ -39,6 +39,7 @@
 #include "lfo-ar.h"
 #include "lzo-run.h"
 #include "lfo-run.h"
+#include "lfo-test.h"
 
 namespace py = pybind11;
 
@@ -1934,6 +1935,72 @@ lfo_run_forecast_binding(py::array_t<double, py::array::c_style | py::array::for
   return std::make_unique<LfoRunWrapper>(result);
 }
 
+// Owns an LfoTest* and exposes its fields as numpy arrays. Not copyable
+// since LfoTest doesn't support that; pybind11 holds it by unique_ptr.
+class LfoTestWrapper {
+public:
+  explicit LfoTestWrapper(LfoTest *result) : result_(result) {}
+  LfoTestWrapper(const LfoTestWrapper &) = delete;
+  LfoTestWrapper &operator=(const LfoTestWrapper &) = delete;
+  ~LfoTestWrapper() { lfo_test_free(result_); }
+
+  unsigned int comp() const { return result_->comp; }
+  unsigned long length() const { return result_->length; }
+
+  py::array_t<double> rms_error() const {
+    py::array_t<double> out((py::ssize_t)result_->comp);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->comp; i++)
+      buf(i) = result_->rms_error[i];
+    return out;
+  }
+
+  py::array_t<double> individual() const {
+    py::array_t<double> out({(py::ssize_t)result_->comp, (py::ssize_t)result_->length});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->comp; i++)
+      for (unsigned long j = 0; j < result_->length; j++)
+	buf(i, j) = result_->individual[i * result_->length + j];
+    return out;
+  }
+
+private:
+  LfoTest *result_;
+};
+
+std::unique_ptr<LfoTestWrapper>
+lfo_test_forecast_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned int embed, unsigned int delay, unsigned int minn,
+			   unsigned int step, py::object causal, py::object iterations,
+			   double eps0, bool epsset, double epsf)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (comp, length)");
+
+  auto comp = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(comp);
+  for (unsigned int i = 0; i < comp; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  unsigned long resolved_causal = causal.is_none() ? (unsigned long)step : causal.cast<unsigned long>();
+  unsigned long resolved_iterations = iterations.is_none() ? length : iterations.cast<unsigned long>();
+
+  double bad_value = 0.0;
+  LfoTest *result = lfo_test_forecast(rows.data(), length, comp, embed, delay, minn, step,
+				       resolved_causal, resolved_iterations,
+				       eps0, epsset ? 1 : 0, epsf, &bad_value);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"either a component of series is constant (ranges from " +
+	std::to_string(bad_value) + " to " + std::to_string(bad_value) +
+	"), or comp/embed/series.shape[1] is 0, or length - (embed-1)*delay "
+	"< minn (too few points to find enough neighbors for the fit)");
+
+  return std::make_unique<LfoTestWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2815,4 +2882,38 @@ PYBIND11_MODULE(_tisean, m)
       "completing flength iterations (matching the CLI's own \"Forecast "
       "failed. Escaping data region!\" exit), if dim < 1, embed < 1, or "
       "series is too short for embed/delay.");
+
+  auto lfo_test = m.def_submodule(
+      "lfo_test",
+      "Average local-linear forecast error at a growing neighborhood size "
+      "per point (source_c/lfo-test.c)");
+
+  py::class_<LfoTestWrapper>(lfo_test, "LfoTest")
+      .def_property_readonly("comp", &LfoTestWrapper::comp)
+      .def_property_readonly("length", &LfoTestWrapper::length,
+			      "Length of the input series")
+      .def_property_readonly("rms_error", &LfoTestWrapper::rms_error,
+			      "Relative forecast error per component, shape (comp,)")
+      .def_property_readonly(
+	  "individual", &LfoTestWrapper::individual,
+	  "Per-point forecast error in original (unscaled) data units, "
+	  "shape (comp, length); zero outside the scanned range "
+	  "[(embed-1)*delay, min(iterations, length) - step)");
+
+  lfo_test.def(
+      "compute", &lfo_test_forecast_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("minn") = 30, py::arg("step") = 1,
+      py::arg("causal") = py::none(), py::arg("iterations") = py::none(),
+      py::arg("eps0") = 1.e-3, py::arg("epsset") = false, py::arg("epsf") = 1.2,
+      "Estimate the average forecast error of a local-linear fit over "
+      "`series` (shape (comp, length)), matching the lfo-test CLI's "
+      "-m/-d/-k/-s/-C/-n/-r/-f options.\n\n"
+      "causal defaults to step (the CLI's default when -C is not given). "
+      "iterations defaults to len(series) (the CLI's default when -n is "
+      "not given). If epsset is True, eps0 is interpreted in the original "
+      "(raw) data units, matching the CLI's -r; otherwise it is used as-is "
+      "in the internally-rescaled [0,1) space.\n\n"
+      "Raises ValueError if a component of series is constant (zero "
+      "range), if comp < 1, embed < 1, series is empty, or series is too "
+      "short for embed/delay/minn.");
 }
