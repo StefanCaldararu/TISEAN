@@ -37,6 +37,7 @@
 #include "nrlazy.h"
 #include "rbf.h"
 #include "lfo-ar.h"
+#include "lzo-run.h"
 
 namespace py = pybind11;
 
@@ -1797,6 +1798,75 @@ rbf_fit_binding(py::array_t<double, py::array::c_style | py::array::forcecast> s
   return std::make_unique<RBFResultWrapper>(result);
 }
 
+// Owns an LzoRun* and exposes its fields as numpy arrays. Not copyable
+// since LzoRun doesn't support that; pybind11 holds it by unique_ptr.
+class LzoRunWrapper {
+public:
+  explicit LzoRunWrapper(LzoRun *result) : result_(result) {}
+  LzoRunWrapper(const LzoRunWrapper &) = delete;
+  LzoRunWrapper &operator=(const LzoRunWrapper &) = delete;
+  ~LzoRunWrapper() { lzo_run_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned long length() const { return result_->length; }
+
+  py::array_t<double> series() const {
+    py::array_t<double> out({(py::ssize_t)result_->length, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->length; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->series[i * result_->dim + j];
+    return out;
+  }
+
+private:
+  LzoRun *result_;
+};
+
+std::unique_ptr<LzoRunWrapper>
+lzo_run_forecast_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			   unsigned int embed, unsigned int delay, unsigned int minn,
+			   bool fix_neighbors, unsigned long flength, double eps0,
+			   bool epsset, double epsf, py::object noise_pct,
+			   unsigned long seed)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim < 1)
+    throw std::invalid_argument("series must have at least one component (shape[0] >= 1)");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+
+  unsigned long minlen = (unsigned long)(embed - 1) * delay;
+  if (length <= minlen)
+    throw std::invalid_argument(
+	"series too short for the given embed/delay (length must be > "
+	"(embed-1)*delay)");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  double noise_value = noise_pct.is_none() ? 0.0 : noise_pct.cast<double>();
+  char setnoise = (!noise_pct.is_none() && noise_value > 0.0) ? 1 : 0;
+
+  LzoRunError error;
+  LzoRun *result = lzo_run_forecast(rows.data(), length, dim, embed, delay, minn,
+				     fix_neighbors ? 1 : 0, flength, eps0,
+				     epsset ? 1 : 0, epsf, noise_value, setnoise,
+				     seed, &error);
+  if (result == nullptr) {
+    if (error == LZO_RUN_ERR_ZERO_INTERVAL)
+      throw std::invalid_argument("series is constant (zero range) for some component");
+    throw std::invalid_argument("series has zero variance for some component");
+  }
+
+  return std::make_unique<LzoRunWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -2620,4 +2690,37 @@ PYBIND11_MODULE(_tisean, m)
       "matrix for the RBF weights is singular, if dim < 1, if series is\n"
       "too short for dim/delay, if min(centers, len(series)) < 2, or if\n"
       "min(insample, len(series)) < step.");
+
+  auto lzo_run = m.def_submodule(
+      "lzo_run", "Iterated local zeroth-order (nearest-neighbor) forecast (source_c/lzo-run.c)");
+
+  py::class_<LzoRunWrapper>(lzo_run, "LzoRun")
+      .def_property_readonly("dim", &LzoRunWrapper::dim)
+      .def_property_readonly("length", &LzoRunWrapper::length,
+			      "Number of iterated forecast points (the CLI's -L)")
+      .def_property_readonly("series", &LzoRunWrapper::series,
+			      "Iterated forecast trajectory, shape (length, dim), "
+			      "in original (unscaled) data units");
+
+  lzo_run.def(
+      "forecast", &lzo_run_forecast_binding, py::arg("series"), py::arg("embed") = 2,
+      py::arg("delay") = 1, py::arg("minn") = 50, py::arg("fix_neighbors") = true,
+      py::arg("flength") = 1000, py::arg("eps0") = 1.e-3, py::arg("epsset") = false,
+      py::arg("epsf") = 1.2, py::arg("noise_pct") = py::none(),
+      py::arg("seed") = 0x9074325UL,
+      "Iterate a local zeroth-order forecast forward `flength` steps from\n"
+      "`series` (shape (dim, length)), matching the lzo-run CLI's\n"
+      "-m/-d/-k/-K/-L/-r/-f/-%/-I options.\n\n"
+      "fix_neighbors mirrors the CLI's -K, but the shipped CLI always\n"
+      "behaves as if -K were given (its setsort global defaults to 1 and\n"
+      "is never reset to 0), so fix_neighbors=True is the default here too\n"
+      "and is what CLI output actually corresponds to.\n\n"
+      "noise_pct adds Gaussian noise (percentage of each component's own "
+      "rescaled variance) to every forecast point when given a value > 0, "
+      "matching the CLI's -%; the default of None matches the CLI not "
+      "being passed -% at all (no noise), regardless of the flag's own "
+      "documented default of 10.0.\n\n"
+      "Raises ValueError if series is constant (zero range) for some "
+      "component, if series has zero variance for some component, if "
+      "dim < 1, embed < 1, or series is too short for embed/delay.");
 }
