@@ -12,6 +12,7 @@
 
 #include "d2.h"
 #include "ar-model.h"
+#include "arima_model.h"
 #include "low121.h"
 #include "histogram.h"
 #include "polypar.h"
@@ -123,6 +124,133 @@ fit(py::array_t<double, py::array::c_style | py::array::forcecast> series,
     throw std::invalid_argument("poles must be >= 1 and < series.shape[1]");
 
   return std::make_unique<ARModelWrapper>(model);
+}
+
+// Owns an ArimaModel* and exposes its fields as numpy arrays. Not copyable
+// since ArimaModel doesn't support that; pybind11 holds it by unique_ptr.
+class ArimaModelWrapper {
+public:
+  explicit ArimaModelWrapper(ArimaModel *model) : model_(model) {}
+  ArimaModelWrapper(const ArimaModelWrapper &) = delete;
+  ArimaModelWrapper &operator=(const ArimaModelWrapper &) = delete;
+  ~ArimaModelWrapper() { arima_model_free(model_); }
+
+  unsigned int dim() const { return model_->dim; }
+  unsigned long length() const { return model_->length; }
+  unsigned int poles() const { return model_->poles; }
+  unsigned int arpoles() const { return model_->arpoles; }
+  unsigned int mapoles() const { return model_->mapoles; }
+  bool is_arima() const { return model_->is_arima != 0; }
+  unsigned int iter_poles() const { return model_->iter_poles; }
+  unsigned int size() const { return model_->size; }
+  unsigned int realiter() const { return model_->realiter; }
+
+  py::array_t<unsigned int> aindex_id() const {
+    py::array_t<unsigned int> out((py::ssize_t)model_->size);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < model_->size; i++)
+      buf(i) = model_->aindex_id[i];
+    return out;
+  }
+
+  py::array_t<unsigned int> aindex_lag() const {
+    py::array_t<unsigned int> out((py::ssize_t)model_->size);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < model_->size; i++)
+      buf(i) = model_->aindex_lag[i];
+    return out;
+  }
+
+  py::array_t<double> coeff() const {
+    unsigned int dim = model_->dim, size = model_->size;
+    py::array_t<double> out({(py::ssize_t)dim, (py::ssize_t)size});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < dim; i++)
+      for (unsigned int j = 0; j < size; j++)
+	buf(i, j) = model_->coeff[i][j];
+    return out;
+  }
+
+  py::array_t<double> rms_error() const {
+    py::array_t<double> out((py::ssize_t)model_->dim);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < model_->dim; i++)
+      buf(i) = model_->rms_error[i];
+    return out;
+  }
+
+  py::array_t<double> residuals() const {
+    py::array_t<double> out({(py::ssize_t)model_->dim, (py::ssize_t)model_->length});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < model_->dim; i++)
+      for (unsigned long j = 0; j < model_->length; j++)
+	buf(i, j) = model_->residuals[i][j];
+    return out;
+  }
+
+  py::array_t<double> xdiff() const {
+    unsigned int realiter = model_->realiter, dim = model_->dim;
+    py::array_t<double> out({(py::ssize_t)realiter, (py::ssize_t)dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < realiter; i++)
+      for (unsigned int j = 0; j < dim; j++)
+	buf(i, j) = model_->xdiff[i][j];
+    return out;
+  }
+
+  py::array_t<double> diffcoeff() const {
+    py::array_t<double> out((py::ssize_t)model_->realiter);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < model_->realiter; i++)
+      buf(i) = model_->diffcoeff[i];
+    return out;
+  }
+
+  py::array_t<double> iterate(unsigned long ilength, unsigned long seed) const {
+    double bad_value = 0.0;
+    double **out = arima_model_iterate(model_, ilength, seed, &bad_value);
+    if (out == nullptr)
+      throw std::invalid_argument(
+	  "a residual component is constant (every entry identical); can't "
+	  "resample innovations from it to iterate");
+
+    py::array_t<double> result({(py::ssize_t)ilength, (py::ssize_t)model_->dim});
+    auto buf = result.mutable_unchecked<2>();
+    for (unsigned long n = 0; n < ilength; n++)
+      for (unsigned int d = 0; d < model_->dim; d++)
+	buf(n, d) = out[n][d];
+    arima_model_iterate_free(out, ilength);
+    return result;
+  }
+
+private:
+  ArimaModel *model_;
+};
+
+std::unique_ptr<ArimaModelWrapper>
+arima_model_fit_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			 unsigned int poles, unsigned int arpoles, unsigned int mapoles,
+			 unsigned int max_iter, double convergence)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  int run_arima = (arpoles > 0 || mapoles > 0) ? 1 : 0;
+  ArimaModel *model = arima_model_fit(rows.data(), length, dim, poles, run_arima, arpoles,
+				       mapoles, max_iter, convergence);
+  if (model == nullptr)
+    throw std::invalid_argument(
+	"poles must be >= 1 and < series.shape[1]; if arpoles or mapoles is "
+	"given, both must also be < series.shape[1]");
+
+  return std::make_unique<ArimaModelWrapper>(model);
 }
 
 py::array_t<double>
@@ -2434,6 +2562,75 @@ PYBIND11_MODULE(_tisean, m)
       "Fit a multivariate AR model to `series` (shape (dim, length)).\n\n"
       "series is expected to already be centered (zero mean per row), the\n"
       "same way the ar-model CLI centers its input before fitting.");
+
+  auto arima_model = m.def_submodule(
+      "arima_model", "Multivariate AR(I)MA model fitting (source_c/arima-model.c)");
+
+  py::class_<ArimaModelWrapper>(arima_model, "ArimaModel")
+      .def_property_readonly("dim", &ArimaModelWrapper::dim)
+      .def_property_readonly("length", &ArimaModelWrapper::length)
+      .def_property_readonly("poles", &ArimaModelWrapper::poles,
+			      "Order of the initial AR fit, as requested")
+      .def_property_readonly("arpoles", &ArimaModelWrapper::arpoles,
+			      "AR order of the ARMA refinement, 0 if none was requested")
+      .def_property_readonly("mapoles", &ArimaModelWrapper::mapoles,
+			      "MA order of the ARMA refinement, 0 if none was requested")
+      .def_property_readonly("is_arima", &ArimaModelWrapper::is_arima,
+			      "Whether ARMA refinement ran (arpoles or mapoles > 0)")
+      .def_property_readonly("iter_poles", &ArimaModelWrapper::iter_poles,
+			      "Effective history depth of the final model: poles for "
+			      "a plain AR fit, max(arpoles,mapoles) once ARMA "
+			      "refinement has run")
+      .def_property_readonly("size", &ArimaModelWrapper::size,
+			      "Number of coefficient columns")
+      .def_property_readonly("realiter", &ArimaModelWrapper::realiter,
+			      "Number of ARMA refinement iterations actually run, "
+			      "0 if is_arima is False")
+      .def_property_readonly(
+	  "aindex_id", &ArimaModelWrapper::aindex_id,
+	  "shape (size,): for coefficient column i, the series row it "
+	  "multiplies - < dim is an AR tap on the raw series, >= dim is an "
+	  "MA tap on the running residual estimate (row - dim)")
+      .def_property_readonly(
+	  "aindex_lag", &ArimaModelWrapper::aindex_lag,
+	  "shape (size,): for coefficient column i, the lag (row[n - "
+	  "aindex_lag[i]])")
+      .def_property_readonly("coeff", &ArimaModelWrapper::coeff,
+			      "AR/ARMA coefficients, shape (dim, size)")
+      .def_property_readonly("rms_error", &ArimaModelWrapper::rms_error,
+			      "One-step-ahead RMS forecast error per component, shape (dim,)")
+      .def_property_readonly(
+	  "residuals", &ArimaModelWrapper::residuals,
+	  "One-step-ahead residual series from the final fit, shape (dim, length); "
+	  "entries before iter_poles are zero (or, if ARMA refinement ran with "
+	  "max(arpoles,mapoles) > poles, stale residuals from the initial AR fit)")
+      .def_property_readonly("xdiff", &ArimaModelWrapper::xdiff,
+			      "Per-iteration RMS change of the residuals, shape "
+			      "(realiter, dim)")
+      .def_property_readonly("diffcoeff", &ArimaModelWrapper::diffcoeff,
+			      "Per-iteration RMS change of coeff[:dim,:dim], shape (realiter,)")
+      .def("iterate", &ArimaModelWrapper::iterate, py::arg("ilength"),
+	   py::arg("seed") = 0x44325UL,
+	   "Iterate the fitted model forward `ilength` steps, drawing "
+	   "innovations from the empirical distribution of `residuals`, "
+	   "and returning an (ilength, dim) array. Raises ValueError if "
+	   "some residual component is constant (every entry identical).");
+
+  arima_model.def(
+      "fit", &arima_model_fit_binding, py::arg("series"), py::arg("poles") = 10,
+      py::arg("arpoles") = 0, py::arg("mapoles") = 0, py::arg("max_iter") = 50,
+      py::arg("convergence") = 1.0e-3,
+      "Fits a multivariate AR(`poles`) model to `series` (shape (dim, "
+      "length)), then, if arpoles or mapoles is > 0, iteratively refines it "
+      "into an ARMA(arpoles,mapoles) model for up to `max_iter` iterations "
+      "(stopping early once the largest per-component residual RMS change "
+      "drops below `convergence`), matching the arima-model CLI's -p/-P/-I/"
+      "-e options.\n\n"
+      "series is expected to already be differenced (matching the CLI's -P "
+      "I-order, via repeated first differences) and centered (zero mean per "
+      "row), the same way the CLI does it before fitting.\n\n"
+      "Raises ValueError if poles < 1 or poles >= series.shape[1], or if "
+      "arpoles/mapoles are given and either is >= series.shape[1].");
 
   auto low121 = m.def_submodule(
       "low121", "Simple [1,2,1]/4 lowpass filter (source_c/low121.c)");
