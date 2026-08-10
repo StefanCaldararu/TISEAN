@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "d2.h"
 #include "ar-model.h"
 #include "low121.h"
 #include "histogram.h"
@@ -2321,6 +2322,89 @@ lyap_spec_compute_binding(py::array_t<double, py::array::c_style | py::array::fo
   return std::make_unique<LyapSpecWrapper>(result);
 }
 
+// Owns a D2Result* and exposes its fields as numpy arrays. Not copyable
+// since D2Result doesn't support that; pybind11 holds it by unique_ptr.
+class D2ResultWrapper {
+public:
+  explicit D2ResultWrapper(D2Result *result) : result_(result) {}
+  D2ResultWrapper(const D2ResultWrapper &) = delete;
+  D2ResultWrapper &operator=(const D2ResultWrapper &) = delete;
+  ~D2ResultWrapper() { d2_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int embed() const { return result_->embed; }
+  unsigned int n_blocks() const { return result_->n_blocks; }
+  unsigned int howoften() const { return result_->howoften; }
+
+  py::array_t<double> eps() const {
+    py::array_t<double> out((py::ssize_t)result_->howoften);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int j = 0; j < result_->howoften; j++)
+      buf(j) = result_->eps[j];
+    return out;
+  }
+
+  py::array_t<double> c2() const { return table(result_->c2); }
+  py::array_t<double> h2() const { return table(result_->h2); }
+  py::array_t<double> d2() const { return table(result_->d2); }
+
+private:
+  py::array_t<double> table(double **rows) const {
+    py::array_t<double> out(
+	{(py::ssize_t)result_->n_blocks, (py::ssize_t)result_->howoften});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->n_blocks; i++)
+      for (unsigned int j = 0; j < result_->howoften; j++)
+	buf(i, j) = rows[i][j];
+    return out;
+  }
+
+  D2Result *result_;
+};
+
+std::unique_ptr<D2ResultWrapper>
+d2_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		    unsigned int embed, unsigned int delay, unsigned long theiler,
+		    double eps_max, bool eps_max_absolute,
+		    double eps_min, bool eps_min_absolute,
+		    unsigned int howoften, unsigned long maxfound, bool rescale)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+
+  if (dim < 1)
+    throw std::invalid_argument("series must have at least one row (dim >= 1)");
+  if (embed < 1)
+    throw std::invalid_argument("embed must be >= 1");
+  if (delay < 1)
+    throw std::invalid_argument("delay must be >= 1");
+  if (howoften < 1)
+    throw std::invalid_argument("howoften must be >= 1");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  D2Error error = D2_OK;
+  D2Result *result = d2_compute(rows.data(), length, dim, embed, delay, theiler,
+				 eps_max, eps_max_absolute ? 1 : 0,
+				 eps_min, eps_min_absolute ? 1 : 0,
+				 howoften, maxfound, rescale ? 1 : 0, &error,
+				 nullptr, nullptr);
+  if (result == nullptr) {
+    if (error == D2_ERR_VECTOR_TOO_LARGE_FOR_LENGTH)
+      throw std::invalid_argument(
+	  "series too short for the given embed/delay (length must be > (embed-1)*delay)");
+    throw std::invalid_argument(
+	"rescale=True requires every row of series to have non-zero variance");
+  }
+
+  return std::make_unique<D2ResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -3393,4 +3477,53 @@ PYBIND11_MODULE(_tisean, m)
       "too short for the given embed/minneighbors, if some row of series "
       "is constant (zero range), or if not enough neighbors are found for "
       "some reference point even after growing the search radius to 1.0.");
+
+  auto d2 = m.def_submodule(
+      "d2", "Correlation sum, -dimension and -entropy (source_c/d2.c)");
+
+  py::class_<D2ResultWrapper>(d2, "D2Result")
+      .def_property_readonly("dim", &D2ResultWrapper::dim)
+      .def_property_readonly("embed", &D2ResultWrapper::embed)
+      .def_property_readonly("n_blocks", &D2ResultWrapper::n_blocks,
+			      "dim*embed, number of per-block rows in c2/h2/d2 "
+			      "below - block 0 is the unembedded (1D) case")
+      .def_property_readonly("howoften", &D2ResultWrapper::howoften)
+      .def_property_readonly("eps", &D2ResultWrapper::eps,
+			      "Epsilon scale shared by every row of c2/h2/d2, "
+			      "shape (howoften,)")
+      .def_property_readonly("c2", &D2ResultWrapper::c2,
+			      "Correlation integral, shape (n_blocks, howoften); "
+			      "NaN where the CLI's own .c2 output would have "
+			      "skipped that (block, eps) pair")
+      .def_property_readonly("h2", &D2ResultWrapper::h2,
+			      "Correlation entropy, shape (n_blocks, howoften); "
+			      "NaN where the CLI's own .h2 output would have "
+			      "skipped that (block, eps) pair")
+      .def_property_readonly("d2", &D2ResultWrapper::d2,
+			      "Local D2 slope estimate, shape (n_blocks, howoften); "
+			      "column 0 and skipped (block, eps) pairs are NaN");
+
+  d2.def(
+      "compute", &d2_compute_binding, py::arg("series"), py::arg("embed") = 10,
+      py::arg("delay") = 1, py::arg("theiler") = 0, py::arg("eps_max") = 1.0,
+      py::arg("eps_max_absolute") = false, py::arg("eps_min") = 1.e-3,
+      py::arg("eps_min_absolute") = false, py::arg("howoften") = 100,
+      py::arg("maxfound") = 1000, py::arg("rescale") = false,
+      "Estimates the correlation sum, -dimension and -entropy of `series` "
+      "(shape (dim, length)) via box-assisted nearest-neighbor search, "
+      "matching the d2 CLI's -M (embed part)/-d/-t/-R/-r/-#/-N/-E options.\n\n"
+      "eps_max/eps_min are interpreted as fractions of the data's own range "
+      "across components unless eps_max_absolute/eps_min_absolute is True, "
+      "in which case they are used directly as absolute epsilons in data "
+      "units, matching the CLI's -R/-r. maxfound=0 means unlimited, "
+      "matching the CLI's -N 0. rescale=True rescales each row to its own "
+      "[0,1) range first, matching the CLI's -E (series is not modified).\n\n"
+      "Returns a D2Result whose c2/h2/d2 (each shape (dim*embed, howoften)) "
+      "are the correlation integral, correlation entropy and local D2 slope "
+      "estimate - the same tables the CLI writes to its .c2/.h2/.d2 files, "
+      "with NaN wherever the CLI's own output would have skipped that row.\n\n"
+      "Raises ValueError if series is not 2D, if dim/embed/delay/howoften < "
+      "1, if series is too short for the given embed/delay (length must be "
+      "> (embed-1)*delay), or if rescale=True and some row of series is "
+      "constant (zero range).");
 }
