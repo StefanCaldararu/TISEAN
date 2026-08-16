@@ -10,15 +10,16 @@ find_package(pybind11 CONFIG REQUIRED)
 # Repo root: python/ is directly under it.
 set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-# Only the sources ar-model/low121/histogram/polypar/corr/xcor/av-d2/mutual/
-# extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol/lzo-gm/polynomp/fsle/
-# false_nearest/pca/delay/lyap_k/lzo-test/boxcount/nrlazy/rbf/lfo-ar/lzo-run/
-# lfo-run/lfo-test/nstat_z/ghkss/lyap_spec/d2 need. Other routines get added
-# here as they get their own reentrant API extracted.
+# Only the sources ar-model/arima-model/low121/histogram/polypar/corr/xcor/
+# av-d2/mutual/extrema/recurr/xzero/mem_spec/lyap_r/makenoise/sav_gol/
+# lzo-gm/polynomp/fsle/false_nearest/pca/delay/lyap_k/lzo-test/boxcount/
+# nrlazy/rbf/lfo-ar/lzo-run/lfo-run/lfo-test/nstat_z/ghkss/lyap_spec/d2 need.
+# Other routines get added here as they get their own reentrant API extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
   ${TISEAN_ROOT}/source_c/api/d2_api.c
   ${TISEAN_ROOT}/source_c/api/ar_model_api.c
+  ${TISEAN_ROOT}/source_c/api/arima_model_api.c
   ${TISEAN_ROOT}/source_c/api/boxcount_api.c
   ${TISEAN_ROOT}/source_c/api/low121_api.c
   ${TISEAN_ROOT}/source_c/api/histogram_api.c
@@ -56,6 +57,8 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c
   ${TISEAN_ROOT}/source_c/routines/solvele.c
   ${TISEAN_ROOT}/source_c/routines/rand.c
+  ${TISEAN_ROOT}/source_c/routines/rand_arb_dist.c
+  ${TISEAN_ROOT}/source_c/routines/rescale_data.c
   ${TISEAN_ROOT}/source_c/routines/make_box.c
   ${TISEAN_ROOT}/source_c/routines/find_neighbors.c
   ${TISEAN_ROOT}/source_c/routines/make_multi_box.c
