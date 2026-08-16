@@ -211,8 +211,13 @@ def test_arima_regression_case_matches_recorded_reference():
     series = load_columns("tests/refs/henon_l1000.txt", [1])
     model = tisean.arima_model.fit(series, poles=10, arpoles=2, ipoles=0, mapoles=1)
 
+    # Unlike tests/test_arima-model.py's own comparison (CLI text vs. CLI
+    # text, both lossy through the same %e roundtrip, tight rtol=1e-7 is
+    # fine), this compares the binding's full-precision doubles against a
+    # reference file that was itself captured through that %e roundtrip -
+    # needs the same looser CLI_TEXT_TOL as everything else in this file.
     np.testing.assert_allclose(
-        model.residuals[0, model.order :], ref, rtol=1e-7, atol=1e-7
+        model.residuals[0, model.order :], ref, **CLI_TEXT_TOL
     )
 
 
@@ -389,7 +394,7 @@ def test_fit_rejects_too_many_arma_poles_like_cli():
 
 def test_fit_rejects_zero_variance_like_cli(tmp_path):
     datafile = tmp_path / "constant.txt"
-    datafile.write_text("\n".join(["1.0"] * 50))
+    datafile.write_text("\n".join(["1.0"] * 50) + "\n")
 
     result = subprocess.run(
         ["./bin/arima-model", "-p3", str(datafile)],
