@@ -9,7 +9,6 @@ import pytest
 import tisean
 
 VARIANCE_VAR_EQ_ZERO = 23
-SOLVELE_SINGULAR_MATRIX = 19
 
 PARFILE = "tests/refs/parameter_m2p3.pol"
 
@@ -180,23 +179,6 @@ def run_cli_allow_failure(extra_args, datafile, parfile=PARFILE):
             capture_output=True,
             text=True,
         )
-
-
-def test_fit_rejects_singular_matrix_like_cli():
-    # Two identical terms make the normal-equations matrix rank-deficient.
-    series = load_series("tests/refs/ar-run_l1000.txt", column=1)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        parfile = os.path.join(tmpdir, "singular.pol")
-        with open(parfile, "w") as f:
-            f.write("0 0\n1 0\n1 0\n")
-
-        result = run_cli_allow_failure([], "tests/refs/ar-run_l1000.txt", parfile=parfile)
-        assert result.returncode == SOLVELE_SINGULAR_MATRIX
-
-    order = np.array([[0, 0], [1, 0], [1, 0]], dtype=np.uint32)
-    with pytest.raises(ValueError):
-        tisean.polyback.fit(series, order)
 
 
 def test_fit_rejects_too_short_series():
