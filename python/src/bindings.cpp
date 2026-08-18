@@ -45,6 +45,7 @@
 #include "nstat_z.h"
 #include "ghkss.h"
 #include "lyap_spec.h"
+#include "polyback.h"
 
 namespace py = pybind11;
 
@@ -2547,6 +2548,97 @@ d2_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast
   return std::make_unique<D2ResultWrapper>(result);
 }
 
+// Owns a PolybackResult* and exposes its fields as numpy arrays. Not
+// copyable since PolybackResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PolybackResultWrapper {
+public:
+  explicit PolybackResultWrapper(PolybackResult *result) : result_(result) {}
+  PolybackResultWrapper(const PolybackResultWrapper &) = delete;
+  PolybackResultWrapper &operator=(const PolybackResultWrapper &) = delete;
+  ~PolybackResultWrapper() { polyback_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int delay() const { return result_->delay; }
+  unsigned long n_terms() const { return result_->n_terms; }
+  double error_in() const { return result_->error_in; }
+  bool has_outsample() const { return result_->has_outsample != 0; }
+  double error_out() const { return result_->error_out; }
+  unsigned int n_levels() const { return result_->n_levels; }
+
+  py::array_t<unsigned int> level_n_terms() const {
+    py::array_t<unsigned int> out((py::ssize_t)result_->n_levels);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->n_levels; i++)
+      buf(i) = result_->level_n_terms[i];
+    return out;
+  }
+
+  py::array_t<double> level_error_in() const {
+    py::array_t<double> out((py::ssize_t)result_->n_levels);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->n_levels; i++)
+      buf(i) = result_->level_error_in[i];
+    return out;
+  }
+
+  py::array_t<double> level_error_out() const {
+    py::array_t<double> out((py::ssize_t)result_->n_levels);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->n_levels; i++)
+      buf(i) = result_->level_error_out[i];
+    return out;
+  }
+
+  py::array_t<unsigned long> removed_index() const {
+    py::array_t<unsigned long> out((py::ssize_t)result_->n_levels);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->n_levels; i++)
+      buf(i) = result_->removed_index[i];
+    return out;
+  }
+
+private:
+  PolybackResult *result_;
+};
+
+std::unique_ptr<PolybackResultWrapper>
+polyback_fit_binding(
+    py::array_t<double, py::array::c_style | py::array::forcecast> series,
+    py::array_t<unsigned int, py::array::c_style | py::array::forcecast> order,
+    unsigned int delay, unsigned long insample, unsigned int step,
+    unsigned int down_to)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (order.ndim() != 2)
+    throw std::invalid_argument("order must be a 2D array of shape (n_terms, dim)");
+
+  auto length = (unsigned long)series.shape(0);
+  auto n_terms = (unsigned long)order.shape(0);
+  auto dim = (unsigned int)order.shape(1);
+
+  if (n_terms < 1)
+    throw std::invalid_argument("order must have at least one row (n_terms >= 1)");
+  if (dim < 1)
+    throw std::invalid_argument("order must have at least one column (dim >= 1)");
+  if (length <= (unsigned long)(dim - 1) * delay + step)
+    throw std::invalid_argument(
+	"series is too short for dim/delay/step: length must be > "
+	"(dim - 1) * delay + step");
+
+  PolybackError error;
+  PolybackResult *result = polyback_fit(series.data(), length, order.data(), n_terms,
+					 dim, delay, insample, step, down_to, &error);
+  if (result == nullptr) {
+    if (error == POLYBACK_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance");
+    throw std::invalid_argument("normal-equations matrix is singular");
+  }
+
+  return std::make_unique<PolybackResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -3730,4 +3822,61 @@ PYBIND11_MODULE(_tisean, m)
       "1, if series is too short for the given embed/delay (length must be "
       "> (embed-1)*delay), or if rescale=True and some row of series is "
       "constant (zero range).");
+
+  auto polyback = m.def_submodule(
+      "polyback", "Backward elimination of polynomial terms (source_c/polyback.c)");
+
+  py::class_<PolybackResultWrapper>(polyback, "PolybackResult")
+      .def_property_readonly("dim", &PolybackResultWrapper::dim)
+      .def_property_readonly("delay", &PolybackResultWrapper::delay)
+      .def_property_readonly("n_terms", &PolybackResultWrapper::n_terms,
+			      "Initial number of polynomial terms")
+      .def_property_readonly("error_in", &PolybackResultWrapper::error_in,
+			      "In-sample forecast error of the full model, "
+			      "normalized by the series' standard deviation")
+      .def_property_readonly("has_outsample", &PolybackResultWrapper::has_outsample,
+			      "Whether error_out/level_error_out were computed, "
+			      "i.e. whether insample < len(series)")
+      .def_property_readonly("error_out", &PolybackResultWrapper::error_out,
+			      "Out-of-sample forecast error of the full model; "
+			      "0.0 if has_outsample is False")
+      .def_property_readonly("n_levels", &PolybackResultWrapper::n_levels,
+			      "Number of backward-elimination steps performed")
+      .def_property_readonly("level_n_terms", &PolybackResultWrapper::level_n_terms,
+			      "Terms remaining after each step, shape (n_levels,)")
+      .def_property_readonly("level_error_in", &PolybackResultWrapper::level_error_in,
+			      "In-sample forecast error at each step, shape "
+			      "(n_levels,)")
+      .def_property_readonly("level_error_out", &PolybackResultWrapper::level_error_out,
+			      "Out-of-sample forecast error at each step, shape "
+			      "(n_levels,); 0.0 throughout if has_outsample is "
+			      "False")
+      .def_property_readonly("removed_index", &PolybackResultWrapper::removed_index,
+			      "Row index into the input `order` array of the "
+			      "term eliminated at each step, shape (n_levels,)");
+
+  polyback.def(
+      "fit", &polyback_fit_binding, py::arg("series"), py::arg("order"),
+      py::arg("delay") = 1, py::arg("insample") = std::numeric_limits<unsigned long>::max(),
+      py::arg("step") = 1, py::arg("down_to") = 1,
+      "Fit a polynomial to `series` (1D) and repeatedly eliminate the term "
+      "whose removal least hurts the forecast error (out-of-sample if "
+      "available, else in-sample), one term at a time, matching the "
+      "polyback CLI's -d/-n/-s/-# options. `order` is a 2D array of shape "
+      "(n_terms, dim) of non-negative exponents (e.g. "
+      "tisean.polypar.generate(dim, order).params): term i of the "
+      "polynomial is the product over j in [0, dim) of "
+      "series[act - j*delay] ** order[i, j]. dim is taken from order's "
+      "second dimension, matching the CLI's -m (which also controls how "
+      "many columns are read from the parameter file).\n\n"
+      "insample selects how much of the series is used to fit each model; "
+      "leaving it unset uses the whole series and leaves error_out/"
+      "level_error_out/has_outsample unset, matching the CLI's default (-n "
+      "unset). step is the forecast horizon used in the fit criterion (the "
+      "CLI's -s, default 1). down_to (the CLI's -#, default 1) is the term "
+      "count to reduce down to; it is clamped to 1 if it is 0 or greater "
+      "than n_terms, exactly like the CLI.\n\n"
+      "Raises ValueError if series is constant, if a normal-equations "
+      "matrix is singular, or if order's shape or series' length is "
+      "degenerate for the given dim/delay/step.");
 }
