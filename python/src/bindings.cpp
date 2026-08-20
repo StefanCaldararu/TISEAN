@@ -46,6 +46,7 @@
 #include "ghkss.h"
 #include "lyap_spec.h"
 #include "polyback.h"
+#include "poincare.h"
 
 namespace py = pybind11;
 
@@ -2639,6 +2640,80 @@ polyback_fit_binding(
   return std::make_unique<PolybackResultWrapper>(result);
 }
 
+// Owns a PoincareResult* and exposes its fields as numpy arrays. Not
+// copyable since PoincareResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PoincareResultWrapper {
+public:
+  explicit PoincareResultWrapper(PoincareResult *result) : result_(result) {}
+  PoincareResultWrapper(const PoincareResultWrapper &) = delete;
+  PoincareResultWrapper &operator=(const PoincareResultWrapper &) = delete;
+  ~PoincareResultWrapper() { poincare_free(result_); }
+
+  unsigned long count() const { return result_->count; }
+  unsigned int dim() const { return result_->dim; }
+
+  py::array_t<double> point() const {
+    unsigned int ncoord = result_->dim > 1 ? result_->dim - 1 : 0;
+    py::array_t<double> out({(py::ssize_t)result_->count, (py::ssize_t)ncoord});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      for (unsigned int j = 0; j < ncoord; j++)
+	buf(i, j) = result_->point[i * ncoord + j];
+    return out;
+  }
+
+  py::array_t<double> dt() const {
+    py::array_t<double> out((py::ssize_t)result_->count);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->count; i++)
+      buf(i) = result_->dt[i];
+    return out;
+  }
+
+private:
+  PoincareResult *result_;
+};
+
+std::unique_ptr<PoincareResultWrapper>
+poincare_find_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		       int dim, py::object comp, int delay, bool from_above,
+		       py::object where)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  int resolved_comp = comp.is_none() ? dim : comp.cast<int>();
+  if (resolved_comp < 1)
+    throw std::invalid_argument("comp must be >= 1");
+  if (delay < 0)
+    throw std::invalid_argument("delay must be >= 0");
+
+  auto length = (unsigned long)series.shape(0);
+
+  int whereset = where.is_none() ? 0 : 1;
+  double resolved_where = where.is_none() ? 0.0 : where.cast<double>();
+
+  PoincareError error;
+  PoincareResult *result = poincare_compute(series.data(), length, dim, resolved_comp,
+					     delay, from_above ? 1 : 0, whereset,
+					     resolved_where, nullptr, nullptr, &error);
+  if (result == nullptr) {
+    if (error == POINCARE_ERR_EMPTY_SERIES)
+      throw std::invalid_argument("series must be non-empty");
+    if (error == POINCARE_ERR_ZERO_VARIANCE)
+      throw std::invalid_argument("series has zero variance");
+    if (error == POINCARE_ERR_WRONG_COMPONENT)
+      throw std::invalid_argument("comp must be <= dim");
+    throw std::invalid_argument(
+	"where must be within [series.min(), series.max()]");
+  }
+
+  return std::make_unique<PoincareResultWrapper>(result);
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -3879,4 +3954,38 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if series is constant, if a normal-equations "
       "matrix is singular, or if order's shape or series' length is "
       "degenerate for the given dim/delay/step.");
+
+  auto poincare = m.def_submodule(
+      "poincare", "Poincare section of a time-delay embedding (source_c/poincare.c)");
+
+  py::class_<PoincareResultWrapper>(poincare, "PoincareResult")
+      .def_property_readonly("count", &PoincareResultWrapper::count)
+      .def_property_readonly("dim", &PoincareResultWrapper::dim)
+      .def_property_readonly(
+	  "point", &PoincareResultWrapper::point,
+	  "Interpolated coordinates of every embedded component other than "
+	  "`comp` (which is pinned to `where`) at each section crossing, "
+	  "shape (count, dim-1)")
+      .def_property_readonly(
+	  "dt", &PoincareResultWrapper::dt,
+	  "Time since the previous section crossing, shape (count,)");
+
+  poincare.def(
+      "find", &poincare_find_binding, py::arg("series"), py::arg("dim") = 2,
+      py::arg("comp") = py::none(), py::arg("delay") = 1,
+      py::arg("from_above") = false, py::arg("where") = py::none(),
+      "Find Poincare-section crossings of the (dim,delay)-embedding of "
+      "`series` (1D), cut through 1-based component `comp` at level "
+      "`where`, matching the poincare CLI's -m/-q/-d/-C/-a options.\n\n"
+      "comp defaults to dim, matching the CLI's own 'last component' "
+      "default when -q is not given. By default (from_above=False, "
+      "matching -C 0) a crossing is detected wherever the component rises "
+      "through `where`; from_above=True (-C 1) detects falling crossings "
+      "instead. where defaults to series.mean() (a plain sequential-sum "
+      "mean, matching the CLI's own default when -a is not given).\n\n"
+      "The very first crossing found only seeds the time reference and "
+      "produces no output row, exactly like the CLI.\n\n"
+      "Raises ValueError if series is empty or has zero variance, if "
+      "comp < 1 or comp > dim, if dim < 1 or delay < 0, or if where falls "
+      "outside [series.min(), series.max()].");
 }

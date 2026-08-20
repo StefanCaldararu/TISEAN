@@ -1,7 +1,7 @@
 add_subdirectory(routines)
 
 set(TISEAN_C_PROGRAMS
-  poincare rescale
+  rescale
   polynom
   resample
   ar-run
@@ -17,8 +17,9 @@ endforeach()
 # mutual, extrema, recurr, xzero, mem_spec, lyap_r, makenoise, sav_gol,
 # lzo-gm, polynomp, fsle, false_nearest, pca, delay, lyap_k, lzo-test,
 # boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run, lfo-test, nstat_z, ghkss,
-# lyap_spec, d2, and polyback use the reentrant APIs in api/ (also used by
-# the Python bindings under python/) instead of duplicating the math inline.
+# lyap_spec, d2, polyback, and poincare use the reentrant APIs in api/ (also
+# used by the Python bindings under python/) instead of duplicating the
+# math inline.
 add_executable(d2 d2.c api/d2_api.c)
 target_link_libraries(d2 PRIVATE ddtsa)
 install(TARGETS d2 RUNTIME DESTINATION bin)
@@ -161,3 +162,7 @@ install(TARGETS ghkss RUNTIME DESTINATION bin)
 add_executable(polyback polyback.c api/polyback_api.c)
 target_link_libraries(polyback PRIVATE ddtsa)
 install(TARGETS polyback RUNTIME DESTINATION bin)
+
+add_executable(poincare poincare.c api/poincare_api.c)
+target_link_libraries(poincare PRIVATE ddtsa)
+install(TARGETS poincare RUNTIME DESTINATION bin)
