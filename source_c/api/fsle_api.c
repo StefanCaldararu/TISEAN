@@ -117,6 +117,14 @@ static char make_iterate(FSLEState *st, long act)
   if ((minelement != -1) && (mindx < eps)) {
     act += del1-delay+1;
     minelement += del1-delay+1;
+    /* act/minelement can land exactly on `length` here (one past the last
+       valid index, e.g. whenever mindist == 0) - guard before the first
+       series[act]/series[minelement] read below, since the bounds checks
+       inside the while loops only protect *subsequent* reads, not this
+       one. Without this, the very first condition check of either while
+       loop is a heap-buffer-overflow read. */
+    if (((unsigned long)act >= length) || ((unsigned long)minelement >= length))
+      return ok;
     which=(int)(log(mindx/eps0)/log(epsfactor));
     if (which < 0) {
       while ((dx=fabs(series[act]-series[minelement])) < data[0].eps) {
