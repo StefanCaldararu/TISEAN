@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/poincare.h"
 
 #define WID_STR "Make a Poincare section"
 
@@ -98,12 +99,10 @@ void scan_options(int n,char** in)
   }
 }
 
-void poincare(void)
+void poincare(PoincareResult *result)
 {
-  unsigned long i;
-  long j,jd;
-  double delta,xcut;
-  double time=0.0,lasttime=0.0;
+  unsigned long i,j;
+  unsigned int ncoord;
   FILE *fout=NULL;
 
   if (!stdo) {
@@ -116,65 +115,24 @@ void poincare(void)
       fprintf(stderr,"Writing to stdout\n");
   }
 
-  if (dir == 0) {
-    for (i=(comp-1)*delay;i<length-(dim-comp)*delay-1;i++) {
-      if ((series[i] < where) && (series[i+1] >= where)) {
-	delta=(series[i]-where)/(series[i]-series[i+1]);
-	time=(double)i+delta;
-	if (lasttime > 0.0) {
-	  for (j= -(comp-1);j<=dim-comp;j++) {
-	    if (j != 0) {
-	      jd=i+j*delay;
-	      xcut=series[jd]+delta*(series[jd+1]-series[jd]);
-	      if (!stdo)
-		fprintf(fout,"%e ",xcut);
-	      else
-		fprintf(stdout,"%e ",xcut);
-	    }
-	  }
-	  if (!stdo) {
-	    fprintf(fout,"%e\n",time-lasttime);
-	    fflush(fout);
-	  }
-	  else {
-	    fprintf(stdout,"%e\n",time-lasttime);
-	    fflush(stdout);
-	  }
-	  count++;
-	}
-	lasttime=time;
-      }
+  ncoord = (dim > 1) ? (unsigned int)(dim-1) : 0;
+
+  for (i=0;i<result->count;i++) {
+    for (j=0;j<ncoord;j++) {
+      if (!stdo)
+	fprintf(fout,"%e ",result->point[i*ncoord+j]);
+      else
+	fprintf(stdout,"%e ",result->point[i*ncoord+j]);
     }
-  }
-  else {
-    for (i=(comp-1)*delay;i<length-(dim-comp)*delay-1;i++) {
-      if ((series[i] > where) && (series[i+1] <= where)) {
-	delta=(series[i]-where)/(series[i]-series[i+1]);
-	time=(double)i+delta;
-	if (lasttime > 0.0) {
-	  for (j= -(comp-1);j<=dim-comp;j++) {
-	    if (j != 0) {
-	      jd=i+j*delay;
-	      xcut=series[jd]+delta*(series[jd+1]-series[jd]);
-	      if (!stdo)
-		fprintf(fout,"%e ",xcut);
-	      else
-		fprintf(stdout,"%e ",xcut);
-	    }
-	  }
-	  if (!stdo) {
-	    fprintf(fout,"%e\n",time-lasttime);
-	    fflush(fout);
-	  }
-	  else {
-	    fprintf(stdout,"%e\n",time-lasttime);
-	    fflush(stdout);
-	  }
-	  count++;
-	}
-	lasttime=time;
-      }
+    if (!stdo) {
+      fprintf(fout,"%e\n",result->dt[i]);
+      fflush(fout);
     }
+    else {
+      fprintf(stdout,"%e\n",result->dt[i]);
+      fflush(stdout);
+    }
+    count++;
   }
   if (!stdo)
     fclose(fout);
@@ -183,8 +141,8 @@ void poincare(void)
 int main(int argc,char** argv)
 {
   char stdi=0;
-  long i;
-  double var;
+  PoincareResult *result;
+  PoincareError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -214,28 +172,29 @@ int main(int argc,char** argv)
     test_outfile(outfile);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  variance(series,length,&average,&var);
-  min=max=series[0];
-  for (i=1;i<length;i++) {
-    if (series[i] < min) min=series[i];
-    if (series[i] > max) max=series[i];
-  }
 
-  if (!whereset)
-    where=average;
   if (dimset && !compset)
     comp=dim;
-  
-  if (comp > dim) {
-    fprintf(stderr,"Component to cut is larger than dimension. Exiting!\n");
-    exit(POINCARE__WRONG_COMPONENT);
+
+  result=poincare_compute(series,length,dim,comp,delay,dir,whereset,where,
+			   &min,&max,&error);
+  if (result == NULL) {
+    switch (error) {
+    case POINCARE_ERR_ZERO_VARIANCE:
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    case POINCARE_ERR_WRONG_COMPONENT:
+      fprintf(stderr,"Component to cut is larger than dimension. Exiting!\n");
+      exit(POINCARE__WRONG_COMPONENT);
+    case POINCARE_ERR_OUTSIDE_REGION:
+    default:
+      fprintf(stderr,"You want to cut outside the data interval which is [%e,"
+	      "%e]\n",min,max);
+      exit(POINCARE__OUTSIDE_REGION);
+    }
   }
-  if ((where < min) || (where > max)) {
-    fprintf(stderr,"You want to cut outside the data interval which is [%e,"
-	    "%e]\n",min,max);
-    exit(POINCARE__OUTSIDE_REGION);
-  }
-  poincare();
+  poincare(result);
+  poincare_free(result);
 
   return 0;
 }
