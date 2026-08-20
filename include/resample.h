@@ -48,7 +48,14 @@ typedef struct {
    numerically singular (mirrors solvele()'s hard-exit case but without
    exiting the process); this depends only on order, not on the data. If
    the new grid has no points strictly before the end of series, the
-   result is non-NULL with length == 0. */
+   result is non-NULL with length == 0.
+
+   Like the original inline code, this does not itself validate length
+   against order: length must be >= (order+1)/2 (integer division) or the
+   internal `length - order/2` wraps around (both are unsigned) and the
+   loop reads series out of bounds - confirmed to segfault the original
+   CLI for a too-short series. Callers that can't guarantee this (e.g. the
+   Python binding) must check it themselves before calling. */
 ResampleResult *resample_compute(const double *series, unsigned long length,
 				  double sampletime, unsigned int order);
 void resample_free(ResampleResult *result);

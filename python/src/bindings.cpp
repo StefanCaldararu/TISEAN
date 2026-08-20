@@ -336,6 +336,19 @@ resample_compute_binding(py::array_t<double, py::array::c_style | py::array::for
     throw std::invalid_argument("series must be a 1D array");
 
   auto length = (unsigned long)series.shape(0);
+  // Below this, resample_compute()'s internal `length - order/2 - 1` (an
+  // unsigned subtraction mirroring the CLI's own arithmetic) wraps around
+  // instead of gating the interpolation loop off, and it reads out of
+  // bounds - confirmed to segfault the original CLI too for a too-short
+  // series (e.g. length=1, default order=4). At or above it, the call is
+  // always safe (either produces real output or, right at the boundary,
+  // an empty one).
+  unsigned int horder = order + 1;
+  if (length < (unsigned long)(horder / 2))
+    throw std::invalid_argument(
+	"series is too short for the given order (need at least "
+	"(order+1)/2 points)");
+
   ResampleResult *result = resample_compute(series.data(), length, sampletime, order);
   if (result == nullptr)
     throw std::invalid_argument(
