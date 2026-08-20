@@ -15,6 +15,7 @@
 #include "arima-model.h"
 #include "low121.h"
 #include "histogram.h"
+#include "resample.h"
 #include "polypar.h"
 #include "corr.h"
 #include "xcor.h"
@@ -325,6 +326,27 @@ histogram_compute_binding(py::array_t<double, py::array::c_style | py::array::fo
     throw std::invalid_argument("series must be non-empty and non-constant");
 
   return std::make_unique<HistogramWrapper>(hist);
+}
+
+py::array_t<double>
+resample_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			  double sampletime, unsigned int order)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+
+  auto length = (unsigned long)series.shape(0);
+  ResampleResult *result = resample_compute(series.data(), length, sampletime, order);
+  if (result == nullptr)
+    throw std::invalid_argument(
+	"order is too large: the interpolation matrix is numerically singular");
+
+  py::array_t<double> out((py::ssize_t)result->length);
+  auto buf = out.mutable_unchecked<1>();
+  for (unsigned long i = 0; i < result->length; i++)
+    buf(i) = result->data[i];
+  resample_free(result);
+  return out;
 }
 
 // Owns a PolyParResult* and exposes its fields as numpy arrays. Not
@@ -2833,6 +2855,21 @@ PYBIND11_MODULE(_tisean, m)
       "compute", &histogram_compute_binding, py::arg("series"), py::arg("base") = 50,
       "Bin `series` into `base` equal-width intervals over its own "
       "[min,max] range, the same way the histogram CLI does it.");
+
+  auto resample = m.def_submodule(
+      "resample", "Resample data via local polynomial interpolation (source_c/resample.c)");
+
+  resample.def(
+      "compute", &resample_compute_binding, py::arg("series"), py::arg("sampletime") = 0.5,
+      py::arg("order") = 4,
+      "Resample `series` (1D) onto a new, evenly spaced time grid via local "
+      "polynomial interpolation of the given `order` (order+1 points per "
+      "local fit), stepping by `sampletime` (in units of the original "
+      "sampling interval) between output points, matching the resample "
+      "CLI's -s/-p options. Returns a new 1D array.\n\n"
+      "Raises ValueError if the (order+1)x(order+1) interpolation matrix "
+      "is numerically singular; this depends only on order, not on the "
+      "data.");
 
   auto polypar = m.def_submodule(
       "polypar", "Polynomial exponent enumeration (source_c/polypar.c)");
