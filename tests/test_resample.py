@@ -4,7 +4,7 @@ import numpy as np
 
 def run_resample():
     result = subprocess.run(
-        ["./bin/resample", "-c1", "-l20", "-p4", "-s0.5", "./tests/refs/ar-run_l1000.txt"],
+        ["./bin/resample", "-s0.5", "-p4", "-l300", "./tests/refs/ar-run_l1000.txt"],
         capture_output=True,
         text=True,
         check=True
@@ -31,6 +31,6 @@ def test_resample_regression():
     out = run_resample()
     data = parse_output(out)
 
-    ref = np.loadtxt("tests/refs/resample_c1l20p4s0.5.txt")
+    ref = np.loadtxt("tests/refs/resample_s05p4l300.txt")
 
     np.testing.assert_allclose(data, ref, rtol=1e-7, atol=1e-7)

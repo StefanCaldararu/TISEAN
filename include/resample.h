@@ -44,18 +44,17 @@ typedef struct {
    same algorithm as the resample CLI's -s/-p options. series is not
    modified.
 
-   Returns NULL if the (order+1)x(order+1) interpolation matrix is
-   numerically singular (mirrors solvele()'s hard-exit case but without
-   exiting the process); this depends only on order, not on the data. If
-   the new grid has no points strictly before the end of series, the
-   result is non-NULL with length == 0.
-
-   Like the original inline code, this does not itself validate length
-   against order: length must be >= (order+1)/2 (integer division) or the
-   internal `length - order/2` wraps around (both are unsigned) and the
-   loop reads series out of bounds - confirmed to segfault the original
-   CLI for a too-short series. Callers that can't guarantee this (e.g. the
-   Python binding) must check it themselves before calling. */
+   Returns NULL if length < (order+1)/2 (integer division): below that,
+   the internal `length - order/2` (both effectively unsigned) would wrap
+   around and the loop would read series out of bounds - confirmed to
+   segfault the original inline code for a too-short series. Also returns
+   NULL if the (order+1)x(order+1) interpolation matrix is numerically
+   singular (mirrors solvele()'s hard-exit case but without exiting the
+   process); this depends only on order, not on the data. Both failure
+   modes are reported the same way (a NULL return); callers that need to
+   tell them apart should re-check the length bound themselves before
+   calling. If the new grid has no points strictly before the end of
+   series, the result is non-NULL with length == 0. */
 ResampleResult *resample_compute(const double *series, unsigned long length,
 				  double sampletime, unsigned int order);
 void resample_free(ResampleResult *result);

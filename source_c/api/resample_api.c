@@ -141,6 +141,16 @@ ResampleResult *resample_compute(const double *series, unsigned long length,
   horder = order + 1;
   horder2 = (horder + 1) / 2 - horder;
 
+  /* Below this, `length - horder/2` below (both effectively unsigned once
+     compared against `length`) wraps around instead of gating the
+     interpolation loop off, and it reads series out of bounds - confirmed
+     to segfault the original CLI for a too-short series. Reject it here
+     so every caller (the CLI included) is protected, not just callers
+     that happen to pre-validate it themselves. Reuses the same NULL
+     convention as the singular-matrix case below. */
+  if (length < (unsigned long)(horder / 2))
+    return NULL;
+
   check_alloc(mat = (double **)malloc(sizeof(double *) * horder));
   for (i = 0; i < horder; i++)
     check_alloc(mat[i] = (double *)malloc(sizeof(double) * horder));

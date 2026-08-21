@@ -117,6 +117,12 @@ int main(int argc,char **argv)
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
 
+  if (length < (unsigned long)((order+1)/2)) {
+    fprintf(stderr,"resample: series too short for order %u"
+	    " (need at least %u points). Exiting!\n",order,(order+1)/2);
+    exit(SOLVELE_SINGULAR_MATRIX);
+  }
+
   result=resample_compute(series,length,sampletime,order);
   if (result == NULL) {
     fprintf(stderr,"Singular matrix! Exiting!\n");
