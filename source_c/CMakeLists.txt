@@ -1,7 +1,6 @@
 add_subdirectory(routines)
 
 set(TISEAN_C_PROGRAMS
-  rescale
   polynom
   ar-run
 )
@@ -12,13 +11,13 @@ foreach(prog ${TISEAN_C_PROGRAMS})
   install(TARGETS ${prog} RUNTIME DESTINATION bin)
 endforeach()
 
-# ar-model, arima-model, low121, histogram, resample, polypar, corr, xcor,
-# av-d2, mutual, extrema, recurr, xzero, mem_spec, lyap_r, makenoise,
-# sav_gol, lzo-gm, polynomp, fsle, false_nearest, pca, delay, lyap_k,
-# lzo-test, boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run, lfo-test,
-# nstat_z, ghkss, lyap_spec, d2, polyback, and poincare use the reentrant
-# APIs in api/ (also used by the Python bindings under python/) instead of
-# duplicating the math inline.
+# ar-model, arima-model, low121, histogram, resample, rescale, polypar,
+# corr, xcor, av-d2, mutual, extrema, recurr, xzero, mem_spec, lyap_r,
+# makenoise, sav_gol, lzo-gm, polynomp, fsle, false_nearest, pca, delay,
+# lyap_k, lzo-test, boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run,
+# lfo-test, nstat_z, ghkss, lyap_spec, d2, polyback, and poincare use the
+# reentrant APIs in api/ (also used by the Python bindings under python/)
+# instead of duplicating the math inline.
 add_executable(d2 d2.c api/d2_api.c)
 target_link_libraries(d2 PRIVATE ddtsa)
 install(TARGETS d2 RUNTIME DESTINATION bin)
@@ -42,6 +41,10 @@ install(TARGETS histogram RUNTIME DESTINATION bin)
 add_executable(resample resample.c api/resample_api.c)
 target_link_libraries(resample PRIVATE ddtsa)
 install(TARGETS resample RUNTIME DESTINATION bin)
+
+add_executable(rescale rescale.c api/rescale_api.c)
+target_link_libraries(rescale PRIVATE ddtsa)
+install(TARGETS rescale RUNTIME DESTINATION bin)
 
 add_executable(lyap_spec lyap_spec.c api/lyap_spec_api.c)
 target_link_libraries(lyap_spec PRIVATE ddtsa)

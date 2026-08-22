@@ -16,6 +16,7 @@
 #include "low121.h"
 #include "histogram.h"
 #include "resample.h"
+#include "rescale.h"
 #include "polypar.h"
 #include "corr.h"
 #include "xcor.h"
@@ -359,6 +360,41 @@ resample_compute_binding(py::array_t<double, py::array::c_style | py::array::for
   for (unsigned long i = 0; i < result->length; i++)
     buf(i) = result->data[i];
   resample_free(result);
+  return out;
+}
+
+py::array_t<double>
+rescale_compute_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+			 bool set_av, bool set_var, double xmin, double xmax)
+{
+  if (series.ndim() != 2)
+    throw std::invalid_argument("series must be a 2D array of shape (dim, length)");
+
+  auto dim = (unsigned int)series.shape(0);
+  auto length = (unsigned long)series.shape(1);
+  if (dim == 0 || length == 0)
+    throw std::invalid_argument("series must be non-empty");
+
+  std::vector<double *> rows(dim);
+  for (unsigned int i = 0; i < dim; i++)
+    rows[i] = series.mutable_data(i, 0);
+
+  RescaleError error;
+  RescaleResult *result = rescale_compute(rows.data(), length, dim, set_av ? 1 : 0,
+					   set_var ? 1 : 0, xmin, xmax, &error);
+  if (result == nullptr) {
+    if (error == RESCALE_ERR_WRONG_INTERVAL)
+      throw std::invalid_argument("xmin must be < xmax");
+    throw std::invalid_argument(
+	"series has a row with zero variance (a constant component)");
+  }
+
+  py::array_t<double> out({(py::ssize_t)dim, (py::ssize_t)length});
+  auto buf = out.mutable_unchecked<2>();
+  for (unsigned int i = 0; i < dim; i++)
+    for (unsigned long j = 0; j < length; j++)
+      buf(i, j) = result->data[i][j];
+  rescale_free(result);
   return out;
 }
 
@@ -2883,6 +2919,32 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if the (order+1)x(order+1) interpolation matrix "
       "is numerically singular; this depends only on order, not on the "
       "data.");
+
+  auto rescale = m.def_submodule(
+      "rescale", "Rescales each row of a data set (source_c/rescale.c)");
+
+  rescale.def(
+      "compute", &rescale_compute_binding, py::arg("series"), py::arg("set_av") = false,
+      py::arg("set_var") = false, py::arg("xmin") = 0.0, py::arg("xmax") = 1.0,
+      "Rescales each row of `series` (shape (dim, length)) independently, "
+      "matching the rescale CLI's -a/-v/-z/-Z options.\n\n"
+      "If set_av is True, each row's own mean is subtracted (the CLI's "
+      "-a). If set_var is True, each row is divided by its own standard "
+      "deviation (the CLI's -v). Both may be set together, applying the "
+      "mean subtraction first and then the variance division, exactly "
+      "like the CLI's -a -v combination. If neither is set (the default), "
+      "each row is instead linearly rescaled from its own [min,max] onto "
+      "[xmin,xmax) - the CLI's default mode; xmin/xmax are otherwise "
+      "ignored. Returns a new (dim, length) array; series is not "
+      "modified.\n\n"
+      "Raises ValueError if xmin >= xmax - checked unconditionally, even "
+      "when set_av or set_var is True and xmin/xmax would otherwise go "
+      "unused, matching a quirk of the CLI where this check runs before "
+      "the per-row mode is applied - or if some row of series is constant "
+      "(zero variance): the CLI's variance() check runs unconditionally "
+      "on every row too, before the mode-specific rescaling, so even the "
+      "default min/max mode rejects a constant row this way rather than "
+      "ever reaching its own interior zero-interval check.");
 
   auto polypar = m.def_submodule(
       "polypar", "Polynomial exponent enumeration (source_c/polypar.c)");
