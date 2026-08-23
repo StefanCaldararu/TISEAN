@@ -23,6 +23,7 @@
    both from the ar-run CLI and from other bindings (e.g. Python) without
    going through global state or argv parsing. */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include "../routines/tsa.h"
 #include "../../include/ar-run.h"
