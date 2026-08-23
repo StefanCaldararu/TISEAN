@@ -12,6 +12,7 @@
 
 #include "d2.h"
 #include "ar-model.h"
+#include "ar-run.h"
 #include "arima-model.h"
 #include "low121.h"
 #include "histogram.h"
@@ -128,6 +129,27 @@ fit(py::array_t<double, py::array::c_style | py::array::forcecast> series,
     throw std::invalid_argument("poles must be >= 1 and < series.shape[1]");
 
   return std::make_unique<ARModelWrapper>(model);
+}
+
+py::array_t<double>
+ar_run_generate_binding(py::array_t<double, py::array::c_style | py::array::forcecast> coeff,
+			 double var, unsigned long length, unsigned long ntrans,
+			 unsigned long seed)
+{
+  if (coeff.ndim() != 1)
+    throw std::invalid_argument("coeff must be a 1D array");
+
+  auto poles = (unsigned int)coeff.shape(0);
+  double *series = ar_run_generate(poles, coeff.data(), var, length, ntrans, seed);
+  if (series == nullptr)
+    throw std::invalid_argument("coeff must have at least one element (poles >= 1)");
+
+  py::array_t<double> out((py::ssize_t)length);
+  auto buf = out.mutable_unchecked<1>();
+  for (unsigned long i = 0; i < length; i++)
+    buf(i) = series[i];
+  ar_run_free(series);
+  return out;
 }
 
 // Owns an ARIMAModel* and exposes its fields as numpy arrays. Not copyable
@@ -2814,6 +2836,21 @@ PYBIND11_MODULE(_tisean, m)
       "Fit a multivariate AR model to `series` (shape (dim, length)).\n\n"
       "series is expected to already be centered (zero mean per row), the\n"
       "same way the ar-model CLI centers its input before fitting.");
+
+  auto ar_run = m.def_submodule(
+      "ar_run", "Iterate an AR model, e.g. as fitted by ar-model (source_c/ar-run.c)");
+
+  ar_run.def(
+      "generate", &ar_run_generate_binding, py::arg("coeff"), py::arg("var"),
+      py::arg("length"), py::arg("ntrans") = 10000, py::arg("seed") = 1UL,
+      "Iterate the AR(len(coeff)) recurrence x_n = sum_j coeff[j]*x_(n-1-j) + "
+      "noise, noise ~ Gaussian(0, var), for `length` steps after discarding "
+      "the first `ntrans` transient steps, matching the ar-run CLI's "
+      "-p (implied by len(coeff))/-x/-I options for any explicit, finite -l. "
+      "coeff[0] multiplies the most recent point (x_(n-1)), coeff[1] the one "
+      "before that, and so on, matching the file format the ar-run CLI reads "
+      "its coefficients from.\n\n"
+      "Raises ValueError if coeff is empty.");
 
   auto arima_model = m.def_submodule(
       "arima_model", "Multivariate ARIMA model fitting (source_c/arima-model.c)");

@@ -2,7 +2,6 @@ add_subdirectory(routines)
 
 set(TISEAN_C_PROGRAMS
   polynom
-  ar-run
 )
 
 foreach(prog ${TISEAN_C_PROGRAMS})
@@ -11,10 +10,10 @@ foreach(prog ${TISEAN_C_PROGRAMS})
   install(TARGETS ${prog} RUNTIME DESTINATION bin)
 endforeach()
 
-# ar-model, arima-model, low121, histogram, resample, rescale, polypar,
-# corr, xcor, av-d2, mutual, extrema, recurr, xzero, mem_spec, lyap_r,
-# makenoise, sav_gol, lzo-gm, polynomp, fsle, false_nearest, pca, delay,
-# lyap_k, lzo-test, boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run,
+# ar-model, ar-run, arima-model, low121, histogram, resample, rescale,
+# polypar, corr, xcor, av-d2, mutual, extrema, recurr, xzero, mem_spec,
+# lyap_r, makenoise, sav_gol, lzo-gm, polynomp, fsle, false_nearest, pca,
+# delay, lyap_k, lzo-test, boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run,
 # lfo-test, nstat_z, ghkss, lyap_spec, d2, polyback, and poincare use the
 # reentrant APIs in api/ (also used by the Python bindings under python/)
 # instead of duplicating the math inline.
@@ -25,6 +24,10 @@ install(TARGETS d2 RUNTIME DESTINATION bin)
 add_executable(ar-model ar-model.c api/ar_model_api.c)
 target_link_libraries(ar-model PRIVATE ddtsa)
 install(TARGETS ar-model RUNTIME DESTINATION bin)
+
+add_executable(ar-run ar-run.c api/ar_run_api.c)
+target_link_libraries(ar-run PRIVATE ddtsa)
+install(TARGETS ar-run RUNTIME DESTINATION bin)
 
 add_executable(arima-model arima-model.c api/arima_model_api.c)
 target_link_libraries(arima-model PRIVATE ddtsa)
