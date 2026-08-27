@@ -6,14 +6,24 @@ REF = "tests/refs/polynom_l1000.txt"
 
 
 def test_generate_polynom_reference():
-    subprocess.run(
-        [POLYNOM_BIN, "-m3", "-d2", "-p3", "-n800", "-L50", "-o", REF, DATAFILE],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    with open(REF) as f:
-        content = f.read()
-    assert "#number of free parameters" in content
-    assert "#average insample error" in content
-    assert "#average out of sample error" in content
+    cases = [
+        ["-m2", "-d1", "-p2"],
+        ["-m2", "-d1", "-p2", "-n800"],
+        ["-m2", "-d1", "-p2", "-n800", "-L50"],
+        ["-m3", "-d2", "-p3"],
+        ["-m3", "-d2", "-p3", "-n800"],
+        ["-m3", "-d2", "-p3", "-n800", "-L50"],
+    ]
+    report = []
+    for flags in cases:
+        outfile = "/tmp/" + "_".join(f.lstrip("-") for f in flags) + ".pol"
+        result = subprocess.run(
+            [POLYNOM_BIN] + flags + ["-o", outfile, DATAFILE],
+            capture_output=True,
+            text=True,
+        )
+        report.append(
+            f"flags={flags} returncode={result.returncode} "
+            f"stderr={result.stderr!r} stdout={result.stdout!r}"
+        )
+    assert False, "\n".join(report)
