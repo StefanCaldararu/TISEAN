@@ -28,6 +28,7 @@
 #include <time.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/ar-run.h"
 
 #define WID_STR "iterate AR model, e.g. as fitted by ar-model (Dresden)"
 
@@ -225,24 +226,33 @@ int main(int argc,char **argv)
     fprintf(stderr,"Writing output to %s\n",outfile);
   
   
-  /* Iterate the AR model */
-  for (n=-ntrans;n<(long)length || length==ULONG_MAX;n++) {
-    /* Compute next value using AR recurrence */
-    nn=((n+ntrans)%poles);
-    xx=gaussian(var);
-    
-    for (j=0;j<poles;j++) {
+  /* Iterate the AR model. length!=ULONG_MAX (an explicit -l) is handled by
+     the reentrant ar_run_generate() API (source_c/api/ar_run_api.c), shared
+     with the Python bindings. length==ULONG_MAX (no -l given) streams
+     forever and can't be expressed as a bounded return, so it keeps its own
+     loop below. */
+  if (length != ULONG_MAX) {
+    double *series=ar_run_generate(poles,a,var,length,ntrans,seed);
+    for (n=0;n<(long)length;n++)
+      fprintf(outf,"%e\n",series[n]);
+    ar_run_free(series);
+  }
+  else {
+    for (n=-(long)ntrans;;n++) {
+      /* Compute next value using AR recurrence */
+      nn=((n+ntrans)%poles);
+      xx=gaussian(var);
+
+      for (j=0;j<poles;j++) {
         int idx = (nn - j - 1 + poles) % poles;
         xx += a[j] * x[idx];
-    }
-    
-    x[nn]=xx;
-    
-    /* Write output after transient phase */
-    if (n>=0) {
-      fprintf(outf,"%e\n",xx);
-      if (length != ULONG_MAX && n >= (long)length-1)
-        break;
+      }
+
+      x[nn]=xx;
+
+      /* Write output after transient phase */
+      if (n>=0)
+        fprintf(outf,"%e\n",xx);
     }
   }
   
