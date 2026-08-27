@@ -32,6 +32,7 @@
 #include "sav_gol.h"
 #include "lzo-gm.h"
 #include "polynomp.h"
+#include "polynom.h"
 #include "fsle.h"
 #include "false_nearest.h"
 #include "pca.h"
@@ -1270,6 +1271,81 @@ polynomp_fit_binding(
   }
 
   return std::make_unique<PolynompResultWrapper>(result);
+}
+
+// Owns a PolynomResult* and exposes its fields as numpy arrays. Not
+// copyable since PolynomResult doesn't support that; pybind11 holds it by
+// unique_ptr.
+class PolynomResultWrapper {
+public:
+  explicit PolynomResultWrapper(PolynomResult *result) : result_(result) {}
+  PolynomResultWrapper(const PolynomResultWrapper &) = delete;
+  PolynomResultWrapper &operator=(const PolynomResultWrapper &) = delete;
+  ~PolynomResultWrapper() { polynom_free(result_); }
+
+  unsigned int dim() const { return result_->dim; }
+  unsigned int delay() const { return result_->delay; }
+  unsigned int order() const { return result_->order; }
+  unsigned int plength() const { return result_->plength; }
+  double norm() const { return result_->norm; }
+  double error_insample() const { return result_->error_insample; }
+  bool has_outsample() const { return result_->has_outsample != 0; }
+  double error_outsample() const { return result_->error_outsample; }
+  unsigned long step() const { return result_->step; }
+
+  py::array_t<double> coeff() const {
+    py::array_t<double> out((py::ssize_t)result_->plength);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned int i = 0; i < result_->plength; i++)
+      buf(i) = result_->coeff[i];
+    return out;
+  }
+
+  py::array_t<int> exponent() const {
+    py::array_t<int> out({(py::ssize_t)result_->plength, (py::ssize_t)result_->dim});
+    auto buf = out.mutable_unchecked<2>();
+    for (unsigned int i = 0; i < result_->plength; i++)
+      for (unsigned int j = 0; j < result_->dim; j++)
+	buf(i, j) = result_->exponent[i * result_->dim + j];
+    return out;
+  }
+
+  py::object forecast() const {
+    if (result_->step == 0)
+      return py::none();
+    py::array_t<double> out((py::ssize_t)result_->step);
+    auto buf = out.mutable_unchecked<1>();
+    for (unsigned long i = 0; i < result_->step; i++)
+      buf(i) = result_->forecast[i];
+    return out;
+  }
+
+private:
+  PolynomResult *result_;
+};
+
+std::unique_ptr<PolynomResultWrapper>
+polynom_fit_binding(py::array_t<double, py::array::c_style | py::array::forcecast> series,
+		     unsigned int dim, unsigned int delay, unsigned int order,
+		     unsigned long insample, unsigned long step)
+{
+  if (series.ndim() != 1)
+    throw std::invalid_argument("series must be a 1D array");
+  if (dim < 1)
+    throw std::invalid_argument("dim must be >= 1");
+
+  auto length = (unsigned long)series.shape(0);
+  if (length <= (unsigned long)(dim - 1) * delay)
+    throw std::invalid_argument(
+	"series is too short for dim/delay: length must be > (dim - 1) * delay");
+
+  PolynomError error;
+  PolynomResult *result = polynom_fit(series.data(), length, dim, delay, order,
+				       insample, step, &error);
+  if (result == nullptr)
+    throw std::invalid_argument("series has zero variance");
+
+  return std::make_unique<PolynomResultWrapper>(result);
 }
 
 // Owns an FSLEResult* and exposes its fields as numpy arrays. Not copyable
@@ -3395,6 +3471,67 @@ PYBIND11_MODULE(_tisean, m)
       "series is constant, if the normal-equations matrix is singular, or\n"
       "if order's shape or series' length is degenerate for the given\n"
       "dim/delay.");
+
+  auto polynom = m.def_submodule(
+      "polynom", "Polynomial fit and forecast of a scalar series over its own "
+		 "enumerated terms (source_c/polynom.c)");
+
+  py::class_<PolynomResultWrapper>(polynom, "PolynomResult")
+      .def_property_readonly("dim", &PolynomResultWrapper::dim)
+      .def_property_readonly("delay", &PolynomResultWrapper::delay)
+      .def_property_readonly("order", &PolynomResultWrapper::order)
+      .def_property_readonly("plength", &PolynomResultWrapper::plength,
+			      "Number of polynomial terms/coefficients")
+      .def_property_readonly("norm", &PolynomResultWrapper::norm,
+			      "Series' own standard deviation, used to "
+			      "normalize the fit internally")
+      .def_property_readonly("coeff", &PolynomResultWrapper::coeff,
+			      "Fitted coefficients, shape (plength,), in "
+			      "original (unscaled) data units")
+      .def_property_readonly(
+	  "exponent", &PolynomResultWrapper::exponent,
+	  "Exponents of each polynomial term, shape (plength, dim): "
+	  "exponent[i, j] is the exponent of series[act - j*delay] in "
+	  "term i")
+      .def_property_readonly("error_insample", &PolynomResultWrapper::error_insample,
+			      "In-sample RMS forecast error, normalized by "
+			      "the series' own standard deviation")
+      .def_property_readonly("has_outsample", &PolynomResultWrapper::has_outsample,
+			      "Whether error_outsample was computed, i.e. "
+			      "whether insample < len(series)")
+      .def_property_readonly("error_outsample", &PolynomResultWrapper::error_outsample,
+			      "Out-of-sample RMS forecast error on "
+			      "[insample, length); 0.0 if has_outsample is "
+			      "False")
+      .def_property_readonly("step", &PolynomResultWrapper::step)
+      .def_property_readonly(
+	  "forecast", &PolynomResultWrapper::forecast,
+	  "Values continuing the series, shape (step,), in original "
+	  "(unscaled) data units; None if step == 0 (no forecast "
+	  "requested)");
+
+  polynom.def(
+      "fit", &polynom_fit_binding, py::arg("series"), py::arg("dim") = 2,
+      py::arg("delay") = 1, py::arg("order") = 2,
+      py::arg("insample") = std::numeric_limits<unsigned long>::max(),
+      py::arg("step") = 0,
+      "Fit an `order`-degree polynomial to `series` (1D) over a `dim`-\n"
+      "dimensional, `delay`-delayed embedding, using polynom's own\n"
+      "internally-enumerated term encoding (unlike polynomp, which takes an\n"
+      "explicit exponent matrix), and optionally forecast it `step` points\n"
+      "forward, matching the polynom CLI's -m/-d/-p/-n/-L options.\n\n"
+      "series is the raw (unscaled) input: like the CLI, this function\n"
+      "divides by the series' own standard deviation internally before\n"
+      "fitting, and un-scales the fitted coefficients/forecast back to\n"
+      "original data units before returning them; series itself is not\n"
+      "modified.\n\n"
+      "insample selects how much of the series is used to fit the model;\n"
+      "leaving it unset uses the whole series and leaves\n"
+      "error_outsample/has_outsample unset, matching the CLI's default (-n\n"
+      "unset). step == 0 (the default, matching the CLI's default when -L\n"
+      "is not given) skips forecasting and leaves `forecast` as None.\n\n"
+      "Raises ValueError if series is constant (zero variance), if dim < "
+      "1, or if series is too short for dim/delay.");
 
   auto fsle = m.def_submodule(
       "fsle", "Finite-size Lyapunov exponent spectrum via Vulpiani et al. (source_c/fsle.c)");

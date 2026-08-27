@@ -46,6 +46,9 @@ typedef struct {
   unsigned int delay;    /* delay, as passed in */
   unsigned int order;    /* polynomial order, as passed in */
   unsigned int plength;  /* number of polynomial terms/coefficients */
+  double norm;           /* the series' own standard deviation, used to
+			     normalize the fit internally - matches the CLI's
+			     "used norm for the fit" output */
   double *coeff;         /* [plength] fitted coefficients, in original
 			     (unscaled) data units - already compensated for
 			     the internal std-dev normalization, the same way

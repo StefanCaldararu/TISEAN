@@ -269,6 +269,7 @@ PolynomResult *polynom_fit(const double *series, unsigned long length,
   result->delay = delay;
   result->order = order;
   result->plength = pars;
+  result->norm = std_dev;
   result->coeff = coeff;
   result->exponent = exponent;
 

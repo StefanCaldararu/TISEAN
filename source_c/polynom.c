@@ -27,6 +27,7 @@
 #include <limits.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/polynom.h"
 
 #define WID_STR "Fits a polynomial to the data"
 
@@ -37,13 +38,9 @@ long CLENGTH=1000;
 unsigned long INSAMPLE=ULONG_MAX;
 int DIM=2,DELAY=1,N=2;
 unsigned int COLUMN=1;
-unsigned int pars=1,hpar;
 unsigned int verbosity=0xff;
 
-long *coding;
-long maxencode;
-double *series,*results;
-double std_dev;
+double *series;
 
 void show_options(char *progname)
 {
@@ -101,140 +98,13 @@ void scan_options(int n,char **in)
       outfile=out;
 }
 
-double polynom(int act,int dim,long cur,long fac)
-{
-  int j,n,hi;
-  double ret=1.0;
-
-  n=cur/fac;
-  hi=act-(dim-1)*DELAY;
-  for (j=1;j<=n;j++)
-    ret *= series[hi];
-  if (dim > 1) 
-    ret *= polynom(act,dim-1,cur-n*fac,fac/(N+1));
-
-  return ret;
-}
-
-int number_pars(int ord,int start)
-{
-  int i,ret=0;
-
-  if (ord == 1)
-    for (i=start;i<=DIM;i++)
-      ret += 1;
-  else
-    for (i=start;i<=DIM;i++)
-      ret += number_pars(ord-1,i);
-
-  return ret;
-}
-
-void make_coding(int ord,int d,int fac,int cur)
-{
-  int j;
-
-  if ( d == -1)
-    coding[hpar++]=cur;
-  else
-    for (j=0;j<=ord;j++)
-      make_coding(ord-j,d-1,fac*(N+1),cur+j*fac);
-}
-
-void make_fit(void)
-{
-  int i,j,k;
-  double **mat,*b;
-  
-  check_alloc(b=(double*)malloc(sizeof(double)*pars));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*pars));
-  for (i=0;i<pars;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*pars));
-
-  for (i=0;i<pars;i++) {
-    b[i]=0.0;
-    for (j=0;j<pars;j++)
-      mat[i][j]=0.0;
-  }
-
-  for (i=0;i<pars;i++)
-    for (j=i;j<pars;j++)
-      for (k=(DIM-1)*DELAY;k<INSAMPLE-1;k++)
-	mat[i][j] += polynom(k,DIM,coding[i],maxencode)*
-	  polynom(k,DIM,coding[j],maxencode);
-  for (i=0;i<pars;i++)
-    for (j=i;j<pars;j++)
-      mat[j][i]=(mat[i][j] /= (INSAMPLE-1-(DIM-1)*DELAY));
-
-  for (i=0;i<pars;i++) {
-    for (j=(DIM-1)*DELAY;j<INSAMPLE-1;j++)
-      b[i] += series[j+1]*polynom(j,DIM,coding[i],maxencode);
-    b[i] /= (INSAMPLE-1-(DIM-1)*DELAY);
-  }
-  solvele(mat,b,pars);
-
-  for (i=0;i<pars;i++)
-    results[i]=b[i];
-  
-  free(b);
-  for (i=0;i<pars;i++)
-    free(mat[i]);
-  free(mat);
-}
-
-void decode(int *out,int dim,long cur,long fac)
-{
-  int n;
-  
-  n=cur/fac;
-  out[dim]=n;
-  if (dim > 0) 
-    decode(out,dim-1,cur-(long)n*fac,fac/(N+1));
-}
-
-double make_error(unsigned long i0,unsigned long i1)
-{
-  int j,k;
-  double h,err;
-  
-  err=0.0;
-  for (j=i0+(DIM-1)*DELAY;j<(long)i1-1;j++) {
-    h=0.0;
-    for (k=0;k<pars;k++) 
-      h += results[k]*polynom(j,DIM,coding[k],maxencode);
-    err += (series[j+1]-h)*(series[j+1]-h);
-  }
-  return err /= ((long)i1-(long)i0-(DIM-1)*DELAY);
-}
-
-void make_cast(FILE *fcast)
-{
-  int i,j,k,hi;
-  double casted;
-  
-  for (i=0;i<=(DIM-1)*DELAY;i++)
-    series[i]=series[LENGTH-(DIM-1)*DELAY-1+i];
-
-  hi=(DIM-1)*DELAY;
-  for (i=1;i<=CLENGTH;i++) {
-    casted=0.0;
-    for (k=0;k<pars;k++)
-      casted += results[k]*polynom((DIM-1)*DELAY,DIM,coding[k],maxencode);
-    fprintf(fcast,"%e\n",casted*std_dev);
-    fflush(fcast);
-    for (j=0;j<(DIM-1)*DELAY;j++)
-      series[j]=series[j+1];
-    series[hi]=casted;
-  }
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  int i,j,k;
-  int *opar,sumpar;
-  double in_error,out_error,av;
+  unsigned int j,k;
   FILE *file;
+  PolynomResult *result;
+  PolynomError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -263,59 +133,44 @@ int main(int argc,char **argv)
   test_outfile(outfile);
 
   series=(double*)get_series(infile,&LENGTH,exclude,COLUMN,verbosity);
-  variance(series,LENGTH,&av,&std_dev);
-  for (i=0;i<LENGTH;i++)
-    series[i] /= std_dev;
 
-  if (!sinsample || (INSAMPLE > LENGTH))
-    INSAMPLE=LENGTH;
-
-  maxencode=1;
-  for (i=1;i<DIM;i++)
-    maxencode *= (N+1);
-  
-  for (i=1;i<=N;i++) {
-    pars += number_pars(i,1);
+  result=polynom_fit(series,LENGTH,(unsigned int)DIM,(unsigned int)DELAY,
+		      (unsigned int)N,INSAMPLE,CAST?(unsigned long)CLENGTH:0UL,
+		      &error);
+  if (result == NULL) {
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
   }
+
   file=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
-  fprintf(file,"#number of free parameters= %d\n\n",pars);
+  fprintf(file,"#number of free parameters= %u\n\n",result->plength);
   fflush(file);
-  check_alloc(coding=(long*)malloc(sizeof(long)*pars));
-  hpar=0;
-  make_coding(N,DIM-1,1,0);
 
-  check_alloc(results=(double*)malloc(sizeof(double)*pars));
-  make_fit();
+  fprintf(file,"#used norm for the fit= %e\n",result->norm);
 
-  check_alloc(opar=(int*)malloc(sizeof(int)*DIM));
-  fprintf(file,"#used norm for the fit= %e\n",std_dev);
-
-  for (j=0;j<pars;j++) {
-    decode(opar,DIM-1,coding[j],maxencode);
+  for (j=0;j<result->plength;j++) {
     fprintf(file,"#");
-    sumpar=0;
-    for (k=0;k<DIM;k++) {
-      sumpar += opar[k];
-      fprintf(file,"%d ",opar[k]);
-    }
-    fprintf(file,"%e\n",results[j]/pow(std_dev,(double)(sumpar-1)));
+    for (k=0;k<result->dim;k++)
+      fprintf(file,"%d ",result->exponent[j*result->dim+k]);
+    fprintf(file,"%e\n",result->coeff[j]);
   }
   fprintf(file,"\n");
 
-  in_error=make_error((unsigned long)0,INSAMPLE);
+  fprintf(file,"#average insample error= %e\n",result->error_insample);
 
-  fprintf(file,"#average insample error= %e\n",sqrt(in_error));
-
-  if (INSAMPLE < LENGTH) {
-    out_error=make_error(INSAMPLE,LENGTH);
-    fprintf(file,"#average out of sample error= %e\n",sqrt(out_error));
-  }
+  if (result->has_outsample)
+    fprintf(file,"#average out of sample error= %e\n",result->error_outsample);
 
   if (CAST)
-    make_cast(file);
+    for (j=0;j<result->step;j++) {
+      fprintf(file,"%e\n",result->forecast[j]);
+      fflush(file);
+    }
   fclose(file);
-  
+
+  polynom_free(result);
+
   return 0;
 }

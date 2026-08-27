@@ -14,8 +14,8 @@ set(TISEAN_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 # rescale/polypar/corr/xcor/av-d2/mutual/extrema/recurr/xzero/mem_spec/
 # lyap_r/makenoise/sav_gol/lzo-gm/polynomp/fsle/false_nearest/pca/delay/
 # lyap_k/lzo-test/boxcount/nrlazy/rbf/lfo-ar/lzo-run/lfo-run/lfo-test/
-# nstat_z/ghkss/lyap_spec/d2/polyback/poincare need. Other routines get
-# added here as they get their own reentrant API extracted.
+# nstat_z/ghkss/lyap_spec/d2/polyback/polynom/poincare need. Other routines
+# get added here as they get their own reentrant API extracted.
 pybind11_add_module(_tisean
   src/bindings.cpp
   ${TISEAN_ROOT}/source_c/api/d2_api.c
@@ -42,6 +42,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/sav_gol_api.c
   ${TISEAN_ROOT}/source_c/api/lzo-gm_api.c
   ${TISEAN_ROOT}/source_c/api/polynomp_api.c
+  ${TISEAN_ROOT}/source_c/api/polynom_api.c
   ${TISEAN_ROOT}/source_c/api/fsle_api.c
   ${TISEAN_ROOT}/source_c/api/false_nearest_api.c
   ${TISEAN_ROOT}/source_c/api/pca_api.c

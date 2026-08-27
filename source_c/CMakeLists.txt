@@ -1,22 +1,12 @@
 add_subdirectory(routines)
 
-set(TISEAN_C_PROGRAMS
-  polynom
-)
-
-foreach(prog ${TISEAN_C_PROGRAMS})
-  add_executable(${prog} ${prog}.c)
-  target_link_libraries(${prog} PRIVATE ddtsa)
-  install(TARGETS ${prog} RUNTIME DESTINATION bin)
-endforeach()
-
 # ar-model, ar-run, arima-model, low121, histogram, resample, rescale,
 # polypar, corr, xcor, av-d2, mutual, extrema, recurr, xzero, mem_spec,
 # lyap_r, makenoise, sav_gol, lzo-gm, polynomp, fsle, false_nearest, pca,
 # delay, lyap_k, lzo-test, boxcount, nrlazy, rbf, lfo-ar, lzo-run, lfo-run,
-# lfo-test, nstat_z, ghkss, lyap_spec, d2, polyback, and poincare use the
-# reentrant APIs in api/ (also used by the Python bindings under python/)
-# instead of duplicating the math inline.
+# lfo-test, nstat_z, ghkss, lyap_spec, d2, polyback, polynom, and poincare
+# use the reentrant APIs in api/ (also used by the Python bindings under
+# python/) instead of duplicating the math inline.
 add_executable(d2 d2.c api/d2_api.c)
 target_link_libraries(d2 PRIVATE ddtsa)
 install(TARGETS d2 RUNTIME DESTINATION bin)
@@ -107,6 +97,10 @@ install(TARGETS lzo-gm RUNTIME DESTINATION bin)
 add_executable(polynomp polynomp.c api/polynomp_api.c)
 target_link_libraries(polynomp PRIVATE ddtsa)
 install(TARGETS polynomp RUNTIME DESTINATION bin)
+
+add_executable(polynom polynom.c api/polynom_api.c)
+target_link_libraries(polynom PRIVATE ddtsa)
+install(TARGETS polynom RUNTIME DESTINATION bin)
 
 add_executable(fsle fsle.c api/fsle_api.c)
 target_link_libraries(fsle PRIVATE ddtsa)
