@@ -72,7 +72,19 @@ def run_randomize(binary, outfile, seed=1, nsur=1):
         + ["-I" + str(seed), "-n" + str(nsur), "-o", str(outfile)]
         + [entry["input"]]
     )
-    return subprocess.run(cmd, capture_output=True, timeout=60)
+    result = subprocess.run(cmd, capture_output=True, timeout=60)
+    with open("tests/debug_randomize.log", "a") as f:
+        f.write(
+            "cmd=%r\ncwd=%r\nreturncode=%r\nstdout=%r\nstderr=%r\n\n"
+            % (
+                cmd,
+                str(Path(".").resolve()),
+                result.returncode,
+                result.stdout.decode(errors="replace"),
+                result.stderr.decode(errors="replace"),
+            )
+        )
+    return result
 
 
 def load_output(entry, path):
