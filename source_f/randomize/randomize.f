@@ -91,7 +91,7 @@ c===========================================================================
          endif
          if(iend.ne.1) goto 1
          write(comment,'(8h# cost: ,g15.5)') cost
-         call writecfile(nmax,mcmax,nx,y,fout,iverb,comment)
+         call xwritecfile(nmax,mcmax,nx,y,fout,iverb,comment)
  10      continue
       end
 
