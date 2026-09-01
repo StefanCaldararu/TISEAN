@@ -1,7 +1,24 @@
+import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
+
+
+@pytest.fixture
+def outdir():
+    # randomize.f stores filenames in a Fortran character*72; pytest's
+    # tmp_path is an absolute path well over 72 characters and gets
+    # silently truncated, so surrogates land nowhere the test expects.
+    # A short path relative to the repo root (the test runner's cwd)
+    # stays under the limit regardless of how deep /tmp nests.
+    d = tempfile.mkdtemp(prefix="t", dir="tests")
+    try:
+        yield Path(d)
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 # Flags shared by every run: -a/-S/-s/-z make the exponential cooling
@@ -66,15 +83,15 @@ def load_output(entry, path):
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
-def test_exits_cleanly(binary, tmp_path):
-    result = run_randomize(binary, tmp_path / "out")
+def test_exits_cleanly(binary, outdir):
+    result = run_randomize(binary, outdir / "out")
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
-def test_deterministic_under_fixed_seed(binary, tmp_path):
-    out1 = tmp_path / "out1"
-    out2 = tmp_path / "out2"
+def test_deterministic_under_fixed_seed(binary, outdir):
+    out1 = outdir / "out1"
+    out2 = outdir / "out2"
     r1 = run_randomize(binary, out1, seed=1)
     r2 = run_randomize(binary, out2, seed=1)
     assert r1.returncode == 0, r1.stderr.decode(errors="replace")
@@ -83,9 +100,9 @@ def test_deterministic_under_fixed_seed(binary, tmp_path):
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
-def test_seed_reseeds(binary, tmp_path):
-    out1 = tmp_path / "out1"
-    out2 = tmp_path / "out2"
+def test_seed_reseeds(binary, outdir):
+    out1 = outdir / "out1"
+    out2 = outdir / "out2"
     r1 = run_randomize(binary, out1, seed=1)
     r2 = run_randomize(binary, out2, seed=2)
     assert r1.returncode == 0, r1.stderr.decode(errors="replace")
@@ -94,9 +111,9 @@ def test_seed_reseeds(binary, tmp_path):
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
-def test_surrogate_is_permutation(binary, tmp_path):
+def test_surrogate_is_permutation(binary, outdir):
     entry = BINARIES[binary]
-    outfile = tmp_path / "out"
+    outfile = outdir / "out"
     result = run_randomize(binary, outfile, seed=1)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
@@ -121,12 +138,12 @@ def test_surrogate_is_permutation(binary, tmp_path):
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
-def test_n_controls_surrogate_count(binary, tmp_path):
-    outfile = tmp_path / "out"
+def test_n_controls_surrogate_count(binary, outdir):
+    outfile = outdir / "out"
     result = run_randomize(binary, outfile, seed=1, nsur=2)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
-    produced = sorted(tmp_path.glob("out*"))
+    produced = sorted(outdir.glob("out*"))
     assert len(produced) == 2
     for f in produced:
         assert f.stat().st_size > 0
