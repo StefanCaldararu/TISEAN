@@ -128,18 +128,25 @@ def test_surrogate_is_permutation(binary, outdir):
         input_data = input_data[:, entry.get("value_col", 0)]
 
     if entry["invariant"] == "values":
+        # xwritecfile prints through a g16.7 format (~7 significant
+        # digits), which alone can move a value by a few 1e-6 relative
+        # -- looser than the "no rounding at all" case but still tight
+        # enough to catch an actual non-permutation.
         np.testing.assert_allclose(np.sort(output), np.sort(input_data),
-                                    rtol=1e-6)
+                                    rtol=1e-5, atol=1e-8)
     else:
         # The "event" permutation scheme (and the times->intervals->times
         # round trip used by default for spike trains) swaps adjacent
         # inter-spike intervals rather than raw point values, so the
         # invariant holds over sorted successive differences, not over
-        # the sorted values themselves.
+        # the sorted values themselves. Differencing two g16.7-rounded,
+        # single-precision absolute times (~O(10)) cancels most of their
+        # shared digits, so the noise floor on the ~O(0.1) intervals is
+        # much higher than for a direct value comparison.
         input_sorted = np.sort(input_data)
         np.testing.assert_allclose(
             np.sort(np.diff(output)), np.sort(np.diff(input_sorted)),
-            rtol=1e-6)
+            rtol=1e-3, atol=2e-4)
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
