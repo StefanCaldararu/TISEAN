@@ -84,8 +84,18 @@ def load_output(entry, path):
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
 def test_exits_cleanly(binary, outdir):
-    result = run_randomize(binary, outdir / "out")
+    outfile = outdir / "out"
+    result = run_randomize(binary, outfile)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert outfile.exists(), (
+        "cmd=%r\nstdout=%s\nstderr=%s\nlisting=%r"
+        % (
+            result.args,
+            result.stdout.decode(errors="replace"),
+            result.stderr.decode(errors="replace"),
+            list(outdir.iterdir()),
+        )
+    )
 
 
 @pytest.mark.parametrize("binary", BINARY_NAMES)
