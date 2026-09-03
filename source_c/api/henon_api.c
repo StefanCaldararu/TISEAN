@@ -41,23 +41,27 @@ double *henon_generate(double a, double b, double x0, double y0,
 
   xo = x0;
   yo = y0;
-  n = -(long)ntrans;
-  do {
-    n++;
+
+  /* n here runs one below the Fortran loop counter (which increments
+     before computing): Fortran's n=-ntrans+1..nmax corresponds to
+     n=-ntrans..length-1 here, with the write condition n_fortran>=1
+     becoming n>=0 and the write index n_fortran-1 becoming n directly. */
+  for (n = -(long)ntrans; n < (long)length; n++) {
     /* xn=1.-a*xo**2+b*yo : xo**2 binds tighter than the multiply in
        Fortran, so this groups as 1 - a*(x*x) + b*y, not 1 - (a*x)*x. */
     xn = 1.0 - a * (xo * xo) + b * yo;
     yn = xo;
     xo = xn;
     yo = yn;
-    if (n < 1)
+
+    if (n < 0)
       continue;
     /* write(iunit,*) real(xn), real(yn) -- the written values are
        rounded to single precision; the state (xo,yo) carried into the
        next iteration is not. */
-    out[2 * (n - 1)] = (double)(float)xn;
-    out[2 * (n - 1) + 1] = (double)(float)yn;
-  } while ((unsigned long)n < length);
+    out[2 * n] = (double)(float)xn;
+    out[2 * n + 1] = (double)(float)yn;
+  }
 
   return out;
 }
