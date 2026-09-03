@@ -27,7 +27,9 @@
 
 unsigned long length = 0, ntrans = 10000;
 char length_set = 0;
-double a = 1.4, b = 0.3, x0 = .68587, y0 = .65876;
+/* xinit/yinit, not x0/y0: y0 collides with the libm Bessel function
+   built-in of that name when declared at file scope. */
+double a = 1.4, b = 0.3, xinit = .68587, yinit = .65876;
 char *outfile = NULL, stdo = 1;
 unsigned int verbosity = 1;
 
@@ -66,9 +68,9 @@ void scan_options(int argc, char **argv)
   if ((out = check_option(argv, argc, 'B', 'f')) != NULL)
     sscanf(out, "%lf", &b);
   if ((out = check_option(argv, argc, 'X', 'f')) != NULL)
-    sscanf(out, "%lf", &x0);
+    sscanf(out, "%lf", &xinit);
   if ((out = check_option(argv, argc, 'Y', 'f')) != NULL)
-    sscanf(out, "%lf", &y0);
+    sscanf(out, "%lf", &yinit);
   if ((out = check_option(argv, argc, 'V', 'u')) != NULL)
     sscanf(out, "%u", &verbosity);
   if ((out = check_option(argv, argc, 'o', 'o')) != NULL) {
@@ -105,8 +107,8 @@ int main(int argc, char **argv)
      from the default. */
   a = (double)(float)a;
   b = (double)(float)b;
-  x0 = (double)(float)x0;
-  y0 = (double)(float)y0;
+  xinit = (double)(float)xinit;
+  yinit = (double)(float)yinit;
 
   if (outfile == NULL) {
     check_alloc(outfile = (char *)calloc((size_t)10, (size_t)1));
@@ -130,13 +132,13 @@ int main(int argc, char **argv)
      with the Python bindings. length==0 streams forever and can't be
      expressed as a bounded return, so it keeps its own loop below. */
   if (length != 0) {
-    series = henon_generate(a, b, x0, y0, length, ntrans);
+    series = henon_generate(a, b, xinit, yinit, length, ntrans);
     for (n = 0; n < (long)length; n++)
       fprintf(outf, "%.9e %.9e\n", series[2 * n], series[2 * n + 1]);
     henon_free(series);
   }
   else {
-    double xo = x0, yo = y0, xn, yn;
+    double xo = xinit, yo = yinit, xn, yn;
     long nn;
 
     for (nn = -(long)ntrans;; nn++) {
