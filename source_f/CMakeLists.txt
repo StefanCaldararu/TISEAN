@@ -43,14 +43,14 @@ add_library(tsa STATIC
   d1.f
   neigh.f
   rank.f
-  nmore.f
   tospec.f
 )
 
-# normal.f and store_spec.f have been ported to C (source_c/routines/normal.c,
-# store_spec.c); the Fortran routines still call them as `normal`/`rms`/
-# `minmax`/`store_spec`, so link the C library that now provides those
-# symbols into every Fortran binary.
+# normal.f, store_spec.f and nmore.f have been ported to C
+# (source_c/routines/normal.c, store_spec.c, nmore.c); the Fortran routines
+# still call them as `normal`/`rms`/`minmax`/`store_spec`/`nmore`/`nless`, so
+# link the C library that now provides those symbols into every Fortran
+# binary.
 target_link_libraries(tsa PUBLIC ddtsa)
 
 set(TISEAN_F_PROGRAMS

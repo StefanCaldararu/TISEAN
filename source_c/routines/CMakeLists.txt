@@ -24,6 +24,7 @@ add_library(ddtsa STATIC
   rand_arb_dist.c
   normal.c
   store_spec.c
+  nmore.c
   fft.c
 )
 
