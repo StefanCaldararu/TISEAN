@@ -74,7 +74,7 @@ def test_ikeda_matches_recurrence():
     np.testing.assert_allclose(data, ref, rtol=1e-6, atol=1e-6)
 
 
-def test_ikeda_flags(tmp_path):
+def test_ikeda_flags(short_outdir):
     baseline = parse_output(run_ikeda(["-l5", "-x0"]).stdout)
 
     # -A, -B, -C, -X, -Y each change the output
@@ -95,7 +95,7 @@ def test_ikeda_flags(tmp_path):
     # -o <file> writes the same numbers to that file that stdout carries
     # without it
     stdout_data = parse_output(run_ikeda(["-l10", "-x0"]).stdout)
-    outfile = tmp_path / "ikeda.out"
+    outfile = short_outdir / "ikeda.out"
     run_ikeda(["-l10", "-x0", "-o", str(outfile)])
     file_data = parse_output(outfile.read_text())
     np.testing.assert_allclose(file_data, stdout_data, rtol=1e-6, atol=1e-6)
