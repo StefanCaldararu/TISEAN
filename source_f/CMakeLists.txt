@@ -61,7 +61,7 @@ set(TISEAN_F_PROGRAMS
   choose rms notch autocor spectrum wiener1 wiener2
   surrogates endtoend timerev
   events intervals spikespec spikeauto
-  ikeda lorenz xrecur
+  lorenz xrecur
 )
 
 foreach(prog ${TISEAN_F_PROGRAMS})
