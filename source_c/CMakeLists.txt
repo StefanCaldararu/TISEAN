@@ -23,6 +23,10 @@ add_executable(henon henon.c api/henon_api.c)
 target_link_libraries(henon PRIVATE ddtsa)
 install(TARGETS henon RUNTIME DESTINATION bin)
 
+add_executable(ikeda ikeda.c api/ikeda_api.c)
+target_link_libraries(ikeda PRIVATE ddtsa)
+install(TARGETS ikeda RUNTIME DESTINATION bin)
+
 add_executable(arima-model arima-model.c api/arima_model_api.c)
 target_link_libraries(arima-model PRIVATE ddtsa)
 install(TARGETS arima-model RUNTIME DESTINATION bin)
