@@ -24,27 +24,21 @@
 #include <limits.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/lfo-run.h"
 
 #define WID_STR "Makes a local linear fit for multivariate data\n\
 and iterates a trajectory"
 
-#define NMAX 128
-
 char onscreen=1,epsset=0,*outfile=NULL;
 char *infile=NULL;
-unsigned int nmax=(NMAX-1);
 unsigned int verbosity=0xff;
-long **box,*list,*found;
-double **series,**cast;
-double *interval,*min,epsilon;
+double **series;
 
-unsigned int embed=2,dim=1,dim1,DELAY=1;
+unsigned int embed=2,dim=1,DELAY=1;
 char *column=NULL,dimset=0,do_zeroth=0;
 int MINN=30;
 unsigned long LENGTH=ULONG_MAX,FLENGTH=1000,exclude=0;
 double EPS0=1.e-3,EPSF=1.2;
-
-double **mat,**imat,*vec,*localav,*foreav;
 
 void show_options(char *progname)
 {
@@ -112,213 +106,30 @@ void scan_options(int n,char **in)
   }
 }
 
-void put_in_boxes(void)
-{
-  int i,j,n;
-  static int hdim;
-  double epsinv;
-
-  hdim=(embed-1)*DELAY;
-  epsinv=1.0/epsilon;
-  for (i=0;i<NMAX;i++)
-    for (j=0;j<NMAX;j++)
-      box[i][j]= -1;
-
-  for (n=hdim;n<LENGTH-1;n++) {
-    i=(int)(series[0][n]*epsinv)&nmax;
-    j=(int)(series[dim1][n-hdim]*epsinv)&nmax;
-    list[n]=box[i][j];
-    box[i][j]=n;
-  }
-}
-
-unsigned int hfind_neighbors(void)
-{
-  char toolarge;
-  int i,j,i1,i2,j1,k,l,element;
-  static int hdim;
-  unsigned nfound=0;
-  double max,dx,epsinv;
-
-  hdim=(embed-1)*DELAY;
-  epsinv=1.0/epsilon;
-  i=(int)(cast[hdim][0]*epsinv)&nmax;
-  j=(int)(cast[0][dim1]*epsinv)&nmax;
-  
-  for (i1=i-1;i1<=i+1;i1++) {
-    i2=i1&nmax;
-    for (j1=j-1;j1<=j+1;j1++) {
-      element=box[i2][j1&nmax];
-      while (element != -1) {
-	max=0.0;
-	toolarge=0;
-	for (l=0;l<dim;l++) {
-	  for (k=0;k<=hdim;k += DELAY) {
-	    dx=fabs(series[l][element-k]-cast[hdim-k][l]);
-	    max=(dx>max) ? dx : max;
-	    if (max > epsilon) {
-	      toolarge=1;
-	      break;
-	    }
-	  }
-	  if (toolarge)
-	    break;
-	}
-	if (max <= epsilon)
-	  found[nfound++]=element;
-	element=list[element];
-      }
-    }
-  }
-  return nfound;
-}
-
-void multiply_matrix(double **mat,double *vec)
-{
-  double *hvec;
-  long i,j;
-
-  check_alloc(hvec=(double*)malloc(sizeof(double)*dim*embed));
-  for (i=0;i<dim*embed;i++) {
-    hvec[i]=0.0;
-    for (j=0;j<dim*embed;j++)
-      hvec[i] += mat[i][j]*vec[j];
-  }
-  for (i=0;i<dim*embed;i++)
-    vec[i]=hvec[i];
-  free(hvec);
-}
-
-void make_fit(int number,double *newcast)
-{
-  double *sj,*si,lavi,lavj,fav;
-  long i,i1,j,j1,hi,hj,hi1,hj1,n,which;
-  static int hdim;
-
-  hdim=(embed-1)*DELAY;
-
-  for (i=0;i<dim*embed;i++)
-    localav[i]=0.0;
-  for (i=0;i<dim;i++)
-    foreav[i]=0.0;
-
-  for (n=0;n<number;n++) {
-    which=found[n];
-    for (j=0;j<dim;j++) {
-      sj=series[j];
-      foreav[j] += sj[which+1];
-      for (j1=0;j1<embed;j1++) {
-	hj=j*embed+j1;
-	localav[hj] += sj[which-j1*DELAY];
-      }
-    }
-  }
-
-  for (i=0;i<dim*embed;i++)
-    localav[i] /= number;
-  for (i=0;i<dim;i++)
-    foreav[i] /= number;
-
-  for (i=0;i<dim;i++) {
-    si=series[i];
-    for (i1=0;i1<embed;i1++) {
-      hi=i*embed+i1;
-      lavi=localav[hi];
-      hi1=i1*DELAY;
-      for (j=0;j<dim;j++) {
-	sj=series[j];
-	for (j1=0;j1<embed;j1++) {
-	  hj=j*embed+j1;
-	  lavj=localav[hj];
-	  hj1=j1*DELAY;
-	  mat[hi][hj]=0.0;
-	  if (hj >= hi) {
-	    for (n=0;n<number;n++) {
-	      which=found[n];
-	      mat[hi][hj] += (si[which-hi1]-lavi)*(sj[which-hj1]-lavj);
-	    }
-	  }
-	}
-      }
-    }
-  }
-  
-  for (i=0;i<dim*embed;i++)
-    for (j=i;j<dim*embed;j++) {
-      mat[i][j] /= number;
-      mat[j][i]=mat[i][j];
-    }
-  
-  imat=invert_matrix(mat,dim*embed);
-
-  for (i=0;i<dim;i++) {
-    si=series[i];
-    fav=foreav[i];
-    for (j=0;j<dim;j++) {
-      sj=series[j];
-      for (j1=0;j1<embed;j1++) {
-	hj=j*embed+j1;
-	lavj=localav[hj];
-	hj1=j1*DELAY;
-	vec[hj]=0.0;
-	for (n=0;n<number;n++) {
-	  which=found[n];
-	  vec[hj] += (si[which+1]-fav)*(sj[which-hj1]-lavj);
-	}
-	vec[hj] /= number;
-      }
-    }
-
-    multiply_matrix(imat,vec);
-
-    newcast[i]=foreav[i];
-    for (j=0;j<dim;j++) {
-      for (j1=0;j1<embed;j1++) {
-	hj=j*embed+j1;
-	newcast[i] += vec[hj]*(cast[hdim-j1*DELAY][j]-localav[hj]);
-      }
-    }
-  }
-  
-  for (i=0;i<dim*embed;i++)
-    free(imat[i]);
-  free(imat);
-}
-
-void make_zeroth(int number,double *newcast)
-{
-  unsigned long i,d;
-  double *sj;
-  
-  for (d=0;d<dim;d++) {
-    newcast[d]=0.0;
-    sj=series[d]+1;
-    for (i=0;i<number;i++)
-      newcast[d] += sj[found[i]];
-    newcast[d] /= number;
-  }
-}
-
 int main(int argc,char **argv)
 {
-  char stdi=0,done;
-  long i,j,hdim,actfound;
-  double maxinterval,*swap,*newcast;
+  char stdi=0;
+  unsigned int c;
+  long i,j;
+  unsigned long k;
+  double cmin,cinterval;
+  LfoRun *result;
+  LfoRunError error;
   FILE *file=NULL;
-  
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
     what_i_do(argv[0],WID_STR);
 #endif
-  
+
   infile=search_datafile(argc,argv,NULL,verbosity);
   if (infile == NULL)
     stdi=1;
-  
+
   if (outfile == NULL) {
     if (!stdi) {
       check_alloc(outfile=(char*)calloc(strlen(infile)+6,(size_t)1));
@@ -332,49 +143,36 @@ int main(int argc,char **argv)
   }
   if (!onscreen)
     test_outfile(outfile);
-  
-  hdim=(embed-1)*DELAY+1;
+
   if (column == NULL)
     series=(double**)get_multi_series(infile,&LENGTH,exclude,&dim,"",dimset,
 				      verbosity);
   else
     series=(double**)get_multi_series(infile,&LENGTH,exclude,&dim,column,
 				      dimset,verbosity);
-  check_alloc(min=(double*)malloc(sizeof(double)*dim));
-  check_alloc(interval=(double*)malloc(sizeof(double)*dim));
-  dim1=dim-1;
-  maxinterval=0.0;
-  for (i=0;i<dim;i++) {
-    rescale_data(series[i],LENGTH,&min[i],&interval[i]);
-    if (interval[i] > maxinterval)
-      maxinterval=interval[i];
+
+  result=lfo_run_forecast((double *const *)series,LENGTH,dim,embed,DELAY,
+			    (unsigned int)MINN,do_zeroth,FLENGTH,EPS0,epsset,
+			    EPSF,&error);
+  if (result == NULL) {
+    /* Reproduce rescale_data()'s exact message for whichever component
+       first has zero range. lfo_run_forecast() rescales a private copy and
+       doesn't report which component failed, but it never touches our own
+       copy of series, so redo the same scan here. */
+    for (c=0;c<dim;c++) {
+      cmin=cinterval=series[c][0];
+      for (k=1;k<LENGTH;k++) {
+	if (series[c][k] < cmin) cmin=series[c][k];
+	if (series[c][k] > cinterval) cinterval=series[c][k];
+      }
+      cinterval -= cmin;
+      if (cinterval == 0.0) break;
+    }
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",cmin,cmin+cinterval);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
   }
-  
-  check_alloc(cast=(double**)malloc(sizeof(double*)*hdim));
-  for (i=0;i<hdim;i++)
-    check_alloc(cast[i]=(double*)malloc(sizeof(double)*dim));
-  check_alloc(newcast=(double*)malloc(sizeof(double)*dim));
-    
-  check_alloc(list=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(found=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(box=(long**)malloc(sizeof(long*)*NMAX));
-  for (i=0;i<NMAX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*NMAX));
-  
-  check_alloc(localav=(double*)malloc(sizeof(double)*dim*embed));
-  check_alloc(foreav=(double*)malloc(sizeof(double)*dim));
-  check_alloc(vec=(double*)malloc(sizeof(double)*dim*embed));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*dim*embed));
-  for (i=0;i<dim*embed;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*dim*embed));
 
-  if (epsset)
-    EPS0 /= maxinterval;
-
-  for (j=0;j<dim;j++)
-    for (i=0;i<hdim;i++)
-      cast[i][j]=series[j][LENGTH-hdim+i];
-  
   if (!onscreen) {
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
@@ -385,69 +183,31 @@ int main(int argc,char **argv)
       fprintf(stderr,"Writing to stdout\n");
   }
 
-  for (i=0;i<FLENGTH;i++) {
-    done=0;
-    epsilon=EPS0/EPSF;
-    while (!done) {
-      epsilon*=EPSF;
-      put_in_boxes();
-      actfound=hfind_neighbors();
-      if (actfound >= MINN) {
-	if (!do_zeroth)
-	  make_fit(actfound,newcast);
-	else
-	  make_zeroth(actfound,newcast);
-	if (onscreen) {
-	  for (j=0;j<dim-1;j++)
-	    printf("%e ",newcast[j]*interval[j]+min[j]);
-	  printf("%e\n",newcast[dim-1]*interval[dim-1]+min[dim-1]);
-	  fflush(stdout);
-	}
-	else {
-	  for (j=0;j<dim-1;j++)
-	    fprintf(file,"%e ",newcast[j]*interval[j]+min[j]);
-	  fprintf(file,"%e\n",newcast[dim-1]*interval[dim-1]+min[dim-1]);
-	  fflush(file);
-	}
-	done=1;
-	for (j=0;j<dim;j++) {
-	  if ((newcast[j] > 2.0) || (newcast[j] < -1.0)) {
-	    fprintf(stderr,"Forecast failed. Escaping data region!\n");
-	    exit(NSTEP__ESCAPE_REGION);
-	  }
-	}
-
-	swap=cast[0];
-	for (j=0;j<hdim-1;j++)
-	  cast[j]=cast[j+1];
-	cast[hdim-1]=swap;
-	for (j=0;j<dim;j++)
-	  cast[hdim-1][j]=newcast[j];
-      }
+  for (i=0;i<(long)result->length;i++) {
+    if (onscreen) {
+      for (j=0;j<(long)dim-1;j++)
+	printf("%e ",result->series[i*dim+j]);
+      printf("%e\n",result->series[i*dim+dim-1]);
+      fflush(stdout);
+    }
+    else {
+      for (j=0;j<(long)dim-1;j++)
+	fprintf(file,"%e ",result->series[i*dim+j]);
+      fprintf(file,"%e\n",result->series[i*dim+dim-1]);
+      fflush(file);
     }
   }
   if (!onscreen)
     fclose(file);
-  
+
+  if (error == LFO_RUN_ERR_ESCAPED_REGION) {
+    fprintf(stderr,"Forecast failed. Escaping data region!\n");
+    exit(NSTEP__ESCAPE_REGION);
+  }
+
+  lfo_run_free(result);
   if (outfile != NULL)
     free(outfile);
-  for (i=0;i<embed*dim;i++)
-    free(mat[i]);
-  free(mat);
-  for (i=0;i<hdim;i++)
-    free(cast[i]);
-  free(cast);
-  free(newcast);
-  free(found);
-  free(list);
-  for (i=0;i<NMAX;i++)
-    free(box[i]);
-  free(box);
-  free(vec);
-  free(localav);
-  free(foreav);
-  free(min);
-  free(interval);
   for (i=0;i<dim;i++)
     free(series[i]);
   free(series);

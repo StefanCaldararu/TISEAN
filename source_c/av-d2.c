@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/av-d2.h"
 
 #define WID_STR "Smoothes the output of the d2 program"
 
@@ -85,10 +86,10 @@ int main(int argc,char **argv)
   char *form1="%lf%lf",*form2="%*lf%lf%lf";
   char empty=0;
   unsigned int howmany,size=1;
-  int j,k;
   long dim;
+  unsigned long idx;
   double *eps,*y;
-  double avy,aveps,norm;
+  AvD2Result *avresult;
   FILE *file,*fout=NULL;
 
   if ((argc < 2) || scan_help(argc,argv))
@@ -128,7 +129,6 @@ int main(int argc,char **argv)
 
   if (mindim > maxdim)
     mindim=maxdim;
-  norm=2.0*aver+1.0;
 
   while (fgets(instr,1024,file) != NULL) {
     if (strlen(instr) != 1) {
@@ -156,17 +156,18 @@ int main(int argc,char **argv)
 		}
 	      }
 	    } while (!empty);
-	    for (k=aver;k<howmany-aver;k++) {
-	      avy=aveps=0.0;
-	      for (j= -aver;j<=aver;j++) {
-		avy += y[k+j];
-		aveps += eps[k+j];
-	      }
-	      if (!stout)
-		fprintf(fout,"%e %e\n",aveps/norm,avy/norm);
-	      else
-		fprintf(stdout,"%e %e\n",aveps/norm,avy/norm);
+	    avresult=av_d2_average(eps,y,(unsigned long)howmany,aver);
+	    if (avresult == NULL) {
+	      fprintf(stderr,"Invalid averaging parameters. Exiting!\n");
+	      exit(127);
 	    }
+	    for (idx=0;idx<avresult->n_points;idx++) {
+	      if (!stout)
+		fprintf(fout,"%e %e\n",avresult->avg_eps[idx],avresult->avg_y[idx]);
+	      else
+		fprintf(stdout,"%e %e\n",avresult->avg_eps[idx],avresult->avg_y[idx]);
+	    }
+	    av_d2_free(avresult);
 	    if (!stout)
 	      fprintf(fout,"\n");
 	    else

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/polypar.h"
 
 #define WID_STR "Creates a parameter file containing all terms\n\t\
 for a polynomial"
@@ -32,8 +33,6 @@ char *outfile=NULL;
 unsigned int dim=2,order=3;
 unsigned int verbosity=0xff;
 FILE *file=NULL;
-
-void make_parameter(unsigned int*,unsigned int, unsigned int);
 
 void show_options(char *progname)
 {
@@ -66,30 +65,10 @@ void scan_options(int n,char **in)
   }
 }
 
-void make_parameter(unsigned int *par,unsigned int d,unsigned int sum)
-{
-  int i,j;
-  
-  for (i=0;i<=order;i++) {
-    sum += i;
-    if (sum <= order) {
-      par[d]=i;
-      if (d == 0) {
-	for (j=0;j<dim;j++)
-	  fprintf(file,"%u ",par[j]);
-	fprintf(file,"\n");
-      }
-      else
-	make_parameter(par,d-1,sum);
-    }
-    sum -= i;
-  }
-  par[d]=0;
-}
-
 int main(int argc,char **argv)
 {
-  unsigned int i,*params;
+  unsigned int i,j;
+  PolyParResult *result;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -100,22 +79,25 @@ int main(int argc,char **argv)
     what_i_do(argv[0],WID_STR);
 #endif
 
-  
+
   if (outfile == NULL) {
     check_alloc(outfile=(char*)calloc((size_t)14,(size_t)1));
     sprintf(outfile,"parameter.pol");
   }
   test_outfile(outfile);
 
-  check_alloc(params=(unsigned int*)malloc(sizeof(unsigned int)*dim));
-  for (i=0;i<dim;i++)
-    params[i]=0;
+  result=polypar_generate(dim,order);
 
   file=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
-  make_parameter(params,dim-1,0);
+  for (i=0;i<result->count;i++) {
+    for (j=0;j<dim;j++)
+      fprintf(file,"%u ",result->params[i*dim+j]);
+    fprintf(file,"\n");
+  }
   fclose(file);
+  polypar_free(result);
 
   return 0;
 }

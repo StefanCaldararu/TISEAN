@@ -23,6 +23,7 @@
 #include <string.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/rbf.h"
 #include <math.h>
 
 #define WID_STR "Fits a RBF-model to the data"
@@ -36,9 +37,7 @@ unsigned int verbosity=0xff;
 long CLENGTH=1000;
 unsigned long LENGTH=ULONG_MAX,INSAMPLE=ULONG_MAX,exclude=0;
 
-double *series,*coefs;
-double varianz,interval,min;
-double **center;
+double *series;
 
 void show_options(char *progname)
 {
@@ -102,156 +101,13 @@ void scan_options(int n,char **in)
   }
 }
 
-double avdistance(void)
-{
-  int i,j,k;
-  double dist=0.0;
-  
-  for (i=0;i<CENTER;i++)
-    for (j=0;j<CENTER;j++)
-      if (i != j)
-	for (k=0;k<DIM;k++)
-	  dist += sqr(center[i][k]-center[j][k]);
-
-  return sqrt(dist/(CENTER-1)/CENTER/DIM);
-}
-
-double rbf(double *act,double *cen)
-{
-  static double denum;
-  double r=0;
-  int i;
-
-  denum=2.0*varianz*varianz;
-
-  for (i=0;i<DIM;i++)
-    r += sqr(*(act-i*DELAY)-cen[i]);
-  
-  return exp(-r/denum);
-}
-
-void drift(void) 
-{
-  double *force,h,h1,step=1e-2,step1;
-  int i,j,k,l,d2=DIM;
-
-  check_alloc(force=(double*)malloc(sizeof(double)*d2));
-  for (l=0;l<20;l++) {
-    for (i=0;i<CENTER;i++) {
-      for (j=0;j<d2;j++) {
-        force[j]=0.0;
-        for (k=0;k<CENTER;k++) {
-          if (k != i) {
-            h=center[i][j]-center[k][j];
-            force[j] += h/sqr(h)/fabs(h);
-          }
-        }
-      }
-      h=0.0;
-      for (j=0;j<d2;j++) 
-        h += sqr(force[j]);
-      step1=step/sqrt(h);
-      for (j=0;j<d2;j++) {
-        h1 = step1*force[j];
-        if (((center[i][j]+h1) > -0.1) && ((center[i][j]+h1) < 1.1))
-          center[i][j] += h1;
-      }
-    }
-  }
-  free(force);
-}
-
-void make_fit(void)
-{
-  double **mat,*hcen;
-  double h;
-  int i,j,n,nst;
-
-  check_alloc(mat=(double**)malloc(sizeof(double*)*(CENTER+1)));
-  for (i=0;i<=CENTER;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*(CENTER+1)));
-  check_alloc(hcen=(double*)malloc(sizeof(double)*CENTER));
-
-  for (i=0;i<=CENTER;i++) {
-    coefs[i]=0.0;
-    for (j=0;j<=CENTER;j++)
-      mat[i][j]=0.0;
-  }
-
-  for (n=(DIM-1)*DELAY;n<INSAMPLE-STEP;n++) {
-    nst=n+STEP;
-    for (i=0;i<CENTER;i++)
-      hcen[i]=rbf(&series[n],center[i]);
-    coefs[0] += series[nst];
-    mat[0][0] += 1.0;
-    for (i=1;i<=CENTER;i++)
-      mat[i][0] += hcen[i-1];
-    for (i=1;i<=CENTER;i++) {
-      coefs[i] += series[nst]*(h=hcen[i-1]);
-      for (j=1;j<=i;j++)
-	mat[i][j] += h*hcen[j-1];
-    }
-  }
-  
-  h=(double)(INSAMPLE-STEP-(DIM-1)*DELAY);
-  for (i=0;i<=CENTER;i++) {
-    coefs[i] /= h;
-    for (j=0;j<=i;j++) {
-      mat[i][j] /= h;
-      mat[j][i]=mat[i][j];
-    }
-  }
-
-  solvele(mat,coefs,(unsigned int)(CENTER+1));
-
-  for (i=0;i<=CENTER;i++)
-    free(mat[i]);
-  free(mat);
-  free(hcen);
-}
-
-double forecast_error(unsigned long i0,unsigned long i1)
-{
-  int i,n;
-  double h,error=0.0;
-
-  for (n=i0+(DIM-1)*DELAY;n<i1-STEP;n++) {
-    h=coefs[0];
-    for (i=1;i<=CENTER;i++)
-      h += coefs[i]*rbf(&series[n],center[i-1]);
-    error += (series[n+STEP]-h)*(series[n+STEP]-h);
-  }
-  
-  return sqrt(error/(i1-i0-STEP-(DIM-1)*DELAY));
-}
-
-void make_cast(FILE *out)
-{
-  double *cast,new_el;
-  int i,n,dim;
-  
-  dim=(DIM-1)*DELAY;
-  check_alloc(cast=(double*)malloc(sizeof(double)*(dim+1)));
-  for (i=0;i<=dim;i++)
-    cast[i]=series[LENGTH-1-dim+i];
-  
-  for (n=0;n<CLENGTH;n++) {
-    new_el=coefs[0];
-    for (i=1;i<=CENTER;i++)
-      new_el += coefs[i]*rbf(&cast[dim],center[i-1]);
-    fprintf(out,"%e\n",new_el*interval+min);
-    for (i=0;i<dim;i++)
-      cast[i]=cast[i+1];
-    cast[dim]=new_el;
-  }
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  int i,j,cstep;
-  double sigma,av;
+  int i,j;
   FILE *file=NULL;
+  RBFResult *result;
+  RBFError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -281,103 +137,83 @@ int main(int argc,char **argv)
     test_outfile(outfile);
 
   series=(double*)get_series(infile,&LENGTH,exclude,COLUMN,verbosity);
-  rescale_data(series,LENGTH,&min,&interval);
-  variance(series,LENGTH,&av,&varianz);
 
-  if (INSAMPLE > LENGTH)
-    INSAMPLE=LENGTH;
-  
-  if (CENTER > LENGTH) 
-    CENTER = LENGTH;
-  
   if (MAKECAST)
     STEP=1;
-  
-  check_alloc(coefs=(double*)malloc(sizeof(double)*(CENTER+1)));
-  check_alloc(center=(double**)malloc(sizeof(double*)*CENTER));
-  for (i=0;i<CENTER;i++)
-    check_alloc(center[i]=(double*)malloc(sizeof(double)*DIM));
-  
-  cstep=LENGTH-1-(DIM-1)*DELAY;
-  for (i=0;i<CENTER;i++)
-    for (j=0;j<DIM;j++)
-      center[i][j]=series[(DIM-1)*DELAY-j*DELAY+(i*cstep)/(CENTER-1)];
 
-  if (setdrift)
-    drift();
-  varianz=avdistance();
-  make_fit();
+  result=rbf_fit(series,LENGTH,(unsigned int)DIM,(unsigned int)DELAY,
+		  (unsigned int)CENTER,(int)setdrift,(unsigned long)STEP,
+		  INSAMPLE,MAKECAST?(unsigned long)CLENGTH:0LU,&error);
+  if (result == NULL) {
+    if (error == RBF_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",series[0],series[0]);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    else {
+      fprintf(stderr,"Singular matrix! Exiting!\n");
+      exit(SOLVELE_SINGULAR_MATRIX);
+    }
+  }
 
   if (!stdo) {
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
     fprintf(file,"#Center points used:\n");
-    for (i=0;i<CENTER;i++) {
+    for (i=0;i<result->centers;i++) {
       fprintf(file,"#");
       for (j=0;j<DIM;j++)
-	fprintf(file," %e",center[i][j]*interval+min);
+	fprintf(file," %e",result->center[i][j]);
       fprintf(file,"\n");
     }
-    fprintf(file,"#variance= %e\n",varianz*interval);
+    fprintf(file,"#variance= %e\n",result->variance);
     fprintf(file,"#Coefficients:\n");
-    fprintf(file,"#%e\n",coefs[0]*interval+min);
-    for (i=1;i<=CENTER;i++)
-      fprintf(file,"#%e\n",coefs[i]*interval);
+    fprintf(file,"#%e\n",result->coefs[0]);
+    for (i=1;i<=result->centers;i++)
+      fprintf(file,"#%e\n",result->coefs[i]);
   }
   else {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
     fprintf(stdout,"#Center points used:\n");
-    for (i=0;i<CENTER;i++) {
+    for (i=0;i<result->centers;i++) {
       fprintf(stdout,"#");
       for (j=0;j<DIM;j++)
-	fprintf(stdout," %e",center[i][j]*interval+min);
+	fprintf(stdout," %e",result->center[i][j]);
       fprintf(stdout,"\n");
     }
-    fprintf(stdout,"#variance= %e\n",varianz*interval);
+    fprintf(stdout,"#variance= %e\n",result->variance);
     fprintf(stdout,"#Coefficients:\n");
-    fprintf(stdout,"#%e\n",coefs[0]*interval+min);
-    for (i=1;i<=CENTER;i++)
-      fprintf(stdout,"#%e\n",coefs[i]*interval);
+    fprintf(stdout,"#%e\n",result->coefs[0]);
+    for (i=1;i<=result->centers;i++)
+      fprintf(stdout,"#%e\n",result->coefs[i]);
   }
-  av=sigma=0.0;
-  for (i=0;i<INSAMPLE;i++) {
-    av += series[i];
-    sigma += series[i]*series[i];
-  }
-  av /= INSAMPLE;
-  sigma=sqrt(fabs(sigma/INSAMPLE-av*av));
   if (!stdo)
-    fprintf(file,"#insample error= %e\n",forecast_error(0LU,INSAMPLE)/sigma);
+    fprintf(file,"#insample error= %e\n",result->insample_error);
   else
-    fprintf(stdout,"#insample error= %e\n",forecast_error(0LU,INSAMPLE)/sigma);
+    fprintf(stdout,"#insample error= %e\n",result->insample_error);
 
-  if (INSAMPLE < LENGTH) {
-    av=sigma=0.0;
-    for (i=INSAMPLE;i<LENGTH;i++) {
-      av += series[i];
-      sigma += series[i]*series[i];
-    }
-    av /= (LENGTH-INSAMPLE);
-    sigma=sqrt(fabs(sigma/(LENGTH-INSAMPLE)-av*av));
+  if (result->has_outsample_error) {
     if (!stdout)
-      fprintf(file,"#out of sample error= %e\n",
-	      forecast_error(INSAMPLE,LENGTH)/sigma);
+      fprintf(file,"#out of sample error= %e\n",result->outsample_error);
     else
-      fprintf(stdout,"#out of sample error= %e\n",
-	      forecast_error(INSAMPLE,LENGTH)/sigma);
+      fprintf(stdout,"#out of sample error= %e\n",result->outsample_error);
   }
 
   if (MAKECAST) {
     if (!stdo)
-      make_cast(file);
+      for (i=0;i<result->cast_length;i++)
+	fprintf(file,"%e\n",result->cast[i]);
     else
-      make_cast(stdout);
+      for (i=0;i<result->cast_length;i++)
+	fprintf(stdout,"%e\n",result->cast[i]);
   }
 
   if (!stdo)
     fclose(file);
+
+  rbf_free(result);
 
   return 0;
 }

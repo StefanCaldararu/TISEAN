@@ -23,19 +23,13 @@
 #include <string.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/lzo-gm.h"
 #include <math.h>
 
 #define WID_STR "Estimates the average forecast error for a local\n\t\
 constant fit as a function of the neighborhood size."
 
 
-/*number of boxes for the neighbor search algorithm*/
-#define NMAX 256
-
-unsigned int nmax=(NMAX-1);
-long **box,*list;
-unsigned long *found;
-double *error;
 double **series;
 
 char eps0set=0,eps1set=0,causalset=0,dimset=0;
@@ -121,37 +115,17 @@ void scan_options(int n,char **in)
   }
 }
 
-void make_fit(long act,unsigned long number)
-{
-  double *si,cast;
-  long i,j;
-  
-  for (i=0;i<dim;i++) {
-    si=series[i];
-    cast=si[found[0]+STEP];
-    for (j=1;j<number;j++)
-      cast += si[found[j]+STEP];
-    cast /= (double)number;
-    error[i] += sqr(cast-series[i][act+STEP]);
-  }
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  unsigned long actfound;
-  unsigned long *hfound;
-  long pfound,i,j;
-  unsigned long clength;
-  double interval,min,maxinterval;
-  double epsilon;
-  double **hser;
-  double avfound,*hrms,*hav,sumerror=0.0;
+  unsigned long i,j;
+  double bad_value;
+  LzoGmResult *result;
   FILE *file=NULL;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -184,31 +158,15 @@ int main(int argc,char **argv)
   else
     series=(double**)get_multi_series(infile,&LENGTH,exclude,&dim,column,
 				      dimset,verbosity);
-  maxinterval=0.0;
-  for (i=0;i<dim;i++) {
-    rescale_data(series[i],LENGTH,&min,&interval);
-    if (interval > maxinterval)
-      maxinterval=interval;
+
+  result=lzo_gm_compute((double *const *)series,LENGTH,dim,embed,delay,STEP,
+			 causal,CLENGTH,EPS0,eps0set,EPS1,eps1set,EPSF,
+			 &bad_value);
+  if (result == NULL) {
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",bad_value,bad_value);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
   }
-  interval=maxinterval;
-
-  check_alloc(list=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(found=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(hfound=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(box=(long**)malloc(sizeof(long*)*NMAX));
-  for (i=0;i<NMAX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*NMAX));
-  check_alloc(error=(double*)malloc(sizeof(double)*dim));
-  check_alloc(hrms=(double*)malloc(sizeof(double)*dim));
-  check_alloc(hav=(double*)malloc(sizeof(double)*dim));
-  check_alloc(hser=(double**)malloc(sizeof(double*)*dim));
-  
-  if (eps0set)
-    EPS0 /= interval;
-  if (eps1set)
-    EPS1 /= interval;
-
-  clength=(CLENGTH <= LENGTH) ? CLENGTH-STEP : LENGTH-STEP;
 
   if (!stdo) {
     file=fopen(outfile,"w");
@@ -222,72 +180,26 @@ int main(int argc,char **argv)
       fprintf(stderr,"Writing to stdout\n");
   }
 
-  for (epsilon=EPS0;epsilon<EPS1*EPSF;epsilon*=EPSF) {
-    pfound=0;
-    for (i=0;i<dim;i++)
-      error[i]=hrms[i]=hav[i]=0.0;
-    avfound=0.0;
-    make_multi_box(series,box,list,LENGTH-STEP,NMAX,dim,
-		   embed,delay,epsilon);
-    for (i=(embed-1)*delay;i<clength;i++) {
-      for (j=0;j<dim;j++)
-	hser[j]=series[j]+i;
-      actfound=find_multi_neighbors(series,box,list,hser,LENGTH,
-				    NMAX,dim,embed,delay,epsilon,hfound);
-      actfound=exclude_interval(actfound,i-causal+1,i+causal+(embed-1)*delay-1,
-				hfound,found);
-      if (actfound > 2*(dim*embed+1)) {
-	make_fit(i,actfound);
-	pfound++;
-	avfound += (double)(actfound-1);
-	for (j=0;j<dim;j++) {
-	  hrms[j] += series[j][i+STEP]*series[j][i+STEP];
-	  hav[j] += series[j][i+STEP];
-	}
-      }
-    }
-    if (pfound > 1) {
-      sumerror=0.0;
-      for (j=0;j<dim;j++) {
-	hav[j] /= pfound;
-	hrms[j]=sqrt(fabs(hrms[j]/(pfound-1)-hav[j]*hav[j]*pfound/(pfound-1)));
-	error[j]=sqrt(error[j]/pfound)/hrms[j];
-	sumerror += error[j];
-      }
-    }
+  for (i=0;i<result->n_rows;i++) {
     if (stdo) {
-      if (pfound > 1) {
-	fprintf(stdout,"%e %e ",epsilon*interval,sumerror/(double)dim);
-	for (j=0;j<dim;j++)
-	  fprintf(stdout,"%e ",error[j]);
-	fprintf(stdout,"%e %e\n",(double)pfound/(clength-(embed-1)*delay),
-		avfound/pfound);
-	fflush(stdout);
-      }
+      fprintf(stdout,"%e %e ",result->epsilon[i],result->avg_error[i]);
+      for (j=0;j<dim;j++)
+	fprintf(stdout,"%e ",result->error[i*dim+j]);
+      fprintf(stdout,"%e %e\n",result->fraction[i],result->avneighbors[i]);
+      fflush(stdout);
     }
     else {
-      if (pfound > 1) {
-	fprintf(file,"%e %e ",epsilon*interval,sumerror/(double)dim);
-	for (j=0;j<dim;j++)
-	  fprintf(file,"%e ",error[j]);
-	fprintf(file,"%e %e\n",(double)pfound/(clength-(embed-1)*delay),
-		avfound/pfound);
-	fflush(file);
-      }
+      fprintf(file,"%e %e ",result->epsilon[i],result->avg_error[i]);
+      for (j=0;j<dim;j++)
+	fprintf(file,"%e ",result->error[i*dim+j]);
+      fprintf(file,"%e %e\n",result->fraction[i],result->avneighbors[i]);
+      fflush(file);
     }
   }
   if (!stdo)
     fclose(file);
 
-  free(list);
-  free(hfound);
-  free(error);
-  free(hrms);
-  free(hav);
-  free(hser);
-  for (i=0;i<NMAX;i++)
-    free(box[i]);
-  free(box);
+  lzo_gm_free(result);
 
   return 0;
 }
