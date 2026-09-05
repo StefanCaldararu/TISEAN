@@ -12,6 +12,13 @@ import pytest
 # short enough on Linux CI to pass by accident, but on macOS
 # (/private/var/folders/.../pytest-of-user/...) it routinely runs past
 # 72 and breaks silently.
+#
+# The fix is the same one already used by outdir (test_randomize.py)
+# and run_c1/run_cluster: hand the binary a short path *relative* to
+# the test runner's cwd (the repo root), not an absolute one. The
+# checkout itself can live at an arbitrarily long absolute location --
+# that's irrelevant, because the relative string is all that ever
+# crosses into the character*72 buffer.
 _MAX_FORTRAN_PATH = 72
 # Generous upper bound on the filenames tests actually join onto the
 # fixture's directory (e.g. "lorenz.out", "henon.out").
@@ -23,10 +30,10 @@ def short_outdir():
     d = Path("tests") / ("t" + uuid.uuid4().hex[:8])
     d.mkdir()
     try:
-        resolved = str(d.resolve())
-        assert len(resolved) + 1 + _MAX_FILENAME_LEN < _MAX_FORTRAN_PATH, (
+        path_str = str(d)
+        assert len(path_str) + 1 + _MAX_FILENAME_LEN < _MAX_FORTRAN_PATH, (
             f"short_outdir yielded a path too long for a Fortran "
-            f"character*72 ({len(resolved)} chars): {resolved}"
+            f"character*72 ({len(path_str)} chars): {path_str}"
         )
         yield d
     finally:
