@@ -51,6 +51,7 @@
 #include "lyap_spec.h"
 #include "polyback.h"
 #include "poincare.h"
+#include "henon.h"
 
 namespace py = pybind11;
 
@@ -2883,6 +2884,24 @@ poincare_find_binding(py::array_t<double, py::array::c_style | py::array::forcec
   return std::make_unique<PoincareResultWrapper>(result);
 }
 
+py::array_t<double>
+henon_generate_binding(unsigned long length, double a, double b, double x0,
+			double y0, unsigned long ntrans)
+{
+  double *series = henon_generate(a, b, x0, y0, length, ntrans);
+  if (series == nullptr)
+    throw std::invalid_argument("length must be >= 1");
+
+  py::array_t<double> out({(py::ssize_t)length, (py::ssize_t)2});
+  auto buf = out.mutable_unchecked<2>();
+  for (unsigned long i = 0; i < length; i++) {
+    buf(i, 0) = series[2 * i];
+    buf(i, 1) = series[2 * i + 1];
+  }
+  henon_free(series);
+  return out;
+}
+
 } // namespace
 
 PYBIND11_MODULE(_tisean, m)
@@ -4274,4 +4293,19 @@ PYBIND11_MODULE(_tisean, m)
       "Raises ValueError if series is empty or has zero variance, if "
       "comp < 1 or comp > dim, if dim < 1 or delay < 0, or if where falls "
       "outside [series.min(), series.max()].");
+
+  auto henon = m.def_submodule(
+      "henon", "Iterate the Henon map (source_c/henon.c)");
+
+  henon.def(
+      "generate", &henon_generate_binding, py::arg("length"),
+      py::arg("a") = 1.4, py::arg("b") = 0.3, py::arg("x0") = 0.68587,
+      py::arg("y0") = 0.65876, py::arg("ntrans") = 10000,
+      "Iterate the Henon map x_(n+1) = 1 - a*x_n**2 + b*y_n, y_(n+1) = x_n, "
+      "starting from (x0,y0), for `length` steps after discarding the "
+      "first `ntrans` transient steps, matching the henon CLI's -A/-B/-X/"
+      "-Y/-x options for any explicit, finite -l. Returns an array of "
+      "shape (length, 2) of (x,y) pairs.\n\n"
+      "Raises ValueError if length is 0 - the CLI's -l0 'stream forever' "
+      "mode can't be expressed as a bounded return.");
 }
