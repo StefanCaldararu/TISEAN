@@ -59,6 +59,7 @@ pybind11_add_module(_tisean
   ${TISEAN_ROOT}/source_c/api/ghkss_api.c
   ${TISEAN_ROOT}/source_c/api/lyap_spec_api.c
   ${TISEAN_ROOT}/source_c/api/poincare_api.c
+  ${TISEAN_ROOT}/source_c/api/henon_api.c
   ${TISEAN_ROOT}/source_c/routines/check_alloc.c
   ${TISEAN_ROOT}/source_c/routines/variance.c
   ${TISEAN_ROOT}/source_c/routines/invert_matrix.c
