@@ -42,13 +42,13 @@ add_library(tsa STATIC
   verbose.f
   d1.f
   neigh.f
-  rank.f
 )
 
-# normal.f, store_spec.f, nmore.f and tospec.f have been ported to C
-# (source_c/routines/normal.c, store_spec.c, nmore.c, tospec.c); the Fortran
-# routines still call them as
-# `normal`/`rms`/`minmax`/`store_spec`/`nmore`/`nless`/`tospec`, so link the
+# normal.f, store_spec.f, nmore.f, tospec.f and rank.f have been ported to C
+# (source_c/routines/normal.c, store_spec.c, nmore.c, tospec.c, rank.c); the
+# Fortran routines still call them as
+# `normal`/`rms`/`minmax`/`store_spec`/`nmore`/`nless`/`tospec`/`rank`/
+# `indexx`/`rank2index`/`sort`/`rank2sort`/`index2sort`/`which`, so link the
 # C library that now provides those symbols into every Fortran binary.
 target_link_libraries(tsa PUBLIC ddtsa)
 
