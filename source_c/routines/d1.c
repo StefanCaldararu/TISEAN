@@ -40,6 +40,7 @@
  * checked for agreement across seeds rather than for an exact value).
  */
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
