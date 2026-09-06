@@ -27,6 +27,7 @@ add_library(ddtsa STATIC
   nmore.c
   tospec.c
   fft.c
+  rank.c
 )
 
 target_link_libraries(ddtsa PUBLIC m)
