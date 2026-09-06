@@ -28,6 +28,7 @@ add_library(ddtsa STATIC
   tospec.c
   fft.c
   rank.c
+  neigh.c
 )
 
 target_link_libraries(ddtsa PUBLIC m)
