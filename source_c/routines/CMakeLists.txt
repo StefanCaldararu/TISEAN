@@ -29,6 +29,7 @@ add_library(ddtsa STATIC
   fft.c
   rank.c
   neigh.c
+  d1.c
 )
 
 target_link_libraries(ddtsa PUBLIC m)

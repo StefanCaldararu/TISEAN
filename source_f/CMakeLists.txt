@@ -40,16 +40,15 @@ add_library(tsa STATIC
   "${CMAKE_CURRENT_BINARY_DIR}/istdio.f"
   help.f
   verbose.f
-  d1.f
 )
 
-# normal.f, store_spec.f, nmore.f, tospec.f, rank.f and neigh.f have been
-# ported to C (source_c/routines/normal.c, store_spec.c, nmore.c, tospec.c,
-# rank.c, neigh.c); the Fortran routines still call them as
+# normal.f, store_spec.f, nmore.f, tospec.f, rank.f, neigh.f and d1.f have
+# been ported to C (source_c/routines/normal.c, store_spec.c, nmore.c,
+# tospec.c, rank.c, neigh.c, d1.c); the Fortran routines still call them as
 # `normal`/`rms`/`minmax`/`store_spec`/`nmore`/`nless`/`tospec`/`rank`/
 # `indexx`/`rank2index`/`sort`/`rank2sort`/`index2sort`/`which`/
-# `base`/`neigh`/`mbase`/`mneigh`/`mneigh2`/`mbase2`, so link the C library
-# that now provides those symbols into every Fortran binary.
+# `base`/`neigh`/`mbase`/`mneigh`/`mneigh2`/`mbase2`/`d1`/`psi`, so link the
+# C library that now provides those symbols into every Fortran binary.
 target_link_libraries(tsa PUBLIC ddtsa)
 
 set(TISEAN_F_PROGRAMS
