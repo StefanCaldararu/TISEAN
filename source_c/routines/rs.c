@@ -109,7 +109,7 @@ static void tred1_s(int *nm, int *n, float *a, float *d, float *e, float *e2)
             g = E(j) - h * f;
             E(j) = g;
             for (k = 1; k <= j; k++)
-                A(j, k) -= f * E(k) + g * A(i, k);
+                A(j, k) = A(j, k) - f * E(k) - g * A(i, k);
         }
 
 L270:
@@ -195,7 +195,7 @@ static void tred2_s(int *nm, int *n, float *a, float *d, float *e, float *z)
             g = E(j) - hh * f;
             E(j) = g;
             for (k = 1; k <= j; k++)
-                Z(j, k) -= f * E(k) + g * Z(i, k);
+                Z(j, k) = Z(j, k) - f * E(k) - g * Z(i, k);
         }
 
 L290:
