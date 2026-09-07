@@ -45,7 +45,7 @@ def test_lorenz_regression():
     np.testing.assert_allclose(data, ref, rtol=1e-7, atol=1e-7)
 
 
-def test_lorenz_flags(tmp_path):
+def test_lorenz_flags(short_outdir):
     # -l controls the row count (one extra row for the post-transient
     # starting point written before the sampled loop begins)
     small = parse_output(run_lorenz_raw(["-l", "5"]).stdout)
@@ -79,7 +79,7 @@ def test_lorenz_flags(tmp_path):
 
     # -o <file> writes the same numbers to that file that stdout carries
     # without it
-    outfile = tmp_path / "lorenz.out"
+    outfile = short_outdir / "lorenz.out"
     run_lorenz_raw(["-l", "20", "-o", str(outfile)])
     file_data = parse_output(outfile.read_text())
     np.testing.assert_allclose(file_data, baseline, rtol=1e-7, atol=1e-7)
