@@ -1,0 +1,36 @@
+import subprocess
+import numpy as np
+
+
+def run_mem_spec():
+    result = subprocess.run(
+        ["./bin/mem_spec", "./tests/refs/ar-run_l1000.txt", "-P", "1000"],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return result.stdout
+
+
+def parse_output(text):
+    data = []
+    for line in text.splitlines():
+        parts = line.strip().split()
+
+        # keep only numeric rows (skip headers)
+        if len(parts) == 2:
+            try:
+                data.append([float(parts[0]), float(parts[1])])
+            except ValueError:
+                continue
+
+    return np.array(data)
+
+
+def test_mem_spec_regression():
+    out = run_mem_spec()
+    data = parse_output(out)
+
+    ref = np.loadtxt("tests/refs/mem_spec_P1000.txt")
+
+    np.testing.assert_allclose(data, ref, rtol=1e-7, atol=1e-7)

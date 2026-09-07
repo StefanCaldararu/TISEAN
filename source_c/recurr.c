@@ -26,10 +26,9 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/recurr.h"
 
 #define WID_STR "This programs makes a recurrence plot for the data."
-
-#define BOX 1024
 
 unsigned long length=ULONG_MAX,exclude=0;
 unsigned int embed=2,dim=1,delay=1;
@@ -42,7 +41,6 @@ char *infile=NULL;
 char epsset=0;
 
 double **series;
-long **box,*list;
 
 void show_options(char *progname)
 {
@@ -104,70 +102,13 @@ void scan_options(int n,char **in)
   }
 }
 
-void lfind_neighbors(void)
-{
-  int i,i1,i2,j,j1,ke,ked,kd;
-  int ibox=BOX-1;
-  long n,element;
-  double dx,epsinv;
-  char toolarge;
-  FILE *fout=NULL;
-
-  epsinv=1./eps;
-  rnd_init(0x9834725L);
-
-  if (!stdo) {
-    fout=fopen(outfile,"w");
-    if (verbosity&VER_INPUT)
-      fprintf(stderr,"Opened %s for writing\n",outfile);
-  }
-  else {
-    if (verbosity&VER_INPUT)
-      fprintf(stderr,"Writing to stdout\n");
-  }
-
-  for (n=(embed-1)*delay;n<length;n++) {
-    i=(int)(series[0][n]*epsinv)&ibox;
-    j=(int)(series[dim-1][n]*epsinv)&ibox;
-    for (i1=i-1;i1<=i+1;i1++) {
-      i2=i1&ibox;
-      for (j1=j-1;j1<=j+1;j1++) {
-	element=box[i2][j1&ibox];
-	while (element > n) {
-	  toolarge=0;
-	  for (ke=0;ke<embed;ke++) {
-	    ked=ke*delay;
-	    for (kd=0;kd<dim;kd++) {
-	      dx=fabs(series[kd][n-ked]-series[kd][element-ked]);
-	      if (dx >= eps) {
-		toolarge=1;
-		break;
-	      }
-	    }
-	    if (toolarge)
-	      break;
-	  }
-	  if (!toolarge)
-	    if (((double)rnd69069()/ULONG_MAX) <= fraction) {
-	      if (!stdo)
-		fprintf(fout,"%ld %ld\n",n+1,element+1);
-	      else
-		fprintf(stdout,"%ld %ld\n",n+1,element+1);
-	    }
-	  element=list[element];
-	}
-      }
-    }
-  }
-  if (!stdo)
-    fclose(fout);
-}
-
 int main(int argc,char **argv)
 {
-  long i;
+  unsigned long i;
   char stdi=0;
-  double min,max,maxmax;
+  double bad_value;
+  RecurrResult *result;
+  FILE *fout=NULL;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -203,23 +144,34 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&length,exclude,&dim,columns,
                                       dimset,verbosity);
 
-  maxmax=0.0;
-  for (i=0;i<dim;i++) {
-    rescale_data(series[i],length,&min,&max);
-    if (max > maxmax)
-      maxmax=max;
+  result=recurr_find((double *const *)series,length,dim,embed,delay,eps,
+		      epsset,fraction,&bad_value);
+  if (result == NULL) {
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",bad_value,bad_value);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
   }
 
-  if (epsset)
-    eps /= maxmax;
+  if (!stdo) {
+    fout=fopen(outfile,"w");
+    if (verbosity&VER_INPUT)
+      fprintf(stderr,"Opened %s for writing\n",outfile);
+  }
+  else {
+    if (verbosity&VER_INPUT)
+      fprintf(stderr,"Writing to stdout\n");
+  }
 
-  check_alloc(list=(long*)malloc(sizeof(long)*length));
-  check_alloc(box=(long**)malloc(sizeof(long*)*BOX));
-  for (i=0;i<BOX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*BOX));
+  for (i=0;i<result->count;i++) {
+    if (!stdo)
+      fprintf(fout,"%ld %ld\n",result->point[i],result->neighbor[i]);
+    else
+      fprintf(stdout,"%ld %ld\n",result->point[i],result->neighbor[i]);
+  }
+  if (!stdo)
+    fclose(fout);
 
-  make_multi_box(series,box,list,length,BOX,dim,embed,delay,eps);
-  lfind_neighbors();
+  recurr_free(result);
 
   return 0;
 }

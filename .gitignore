@@ -1,1 +1,10 @@
+__pycache__
+Makefile
 build
+bin
+*.a
+*.o
+*.f
+CMakeCache.txt
+CMakeFiles
+cmake_install.cmake

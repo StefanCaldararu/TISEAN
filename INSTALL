@@ -1,8 +1,7 @@
-To install type 
+To install type
 
-./configue
-make
-make install
+cmake -S . -B build
+cmake --build build
+cmake --install build
 
 and observe the warnings :-)
-

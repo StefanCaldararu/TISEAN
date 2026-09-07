@@ -25,6 +25,7 @@
 #include <limits.h>
 #include <time.h>
 #include "routines/tsa.h"
+#include "../include/makenoise.h"
 
 #define WID_STR "Adds noise to a time series or just creates random numbers"
 
@@ -118,39 +119,12 @@ void scan_options(int n,char** in)
   }
 }
 
-void equidistri(double sigmax,unsigned int which) 
-{
-  int i;
-  double limit,equinorm;
-  
-  equinorm=(double)ULONG_MAX;
-  if (!absolute)
-    limit=2.0*sqrt(3.0)*sigmax*noiselevel;
-  else
-    limit=2.0*noiselevel;
-  for (i=0;i<length;i++)
-    array[which][i] += (limit*((double)rnd_1279()/equinorm-0.5));
-} 
-
-void gauss(double sigmax,unsigned int which)
-{
-  int i;
-  double glevel;
-
-  if (!absolute)
-    glevel=noiselevel*sigmax;
-  else
-    glevel=noiselevel;
-  for (i=0;i<length;i++)
-    array[which][i] += gaussian(glevel);
-}
-
 int main(int argc,char** argv)
 {
   char stdi=0;
   unsigned long i,j;
-  double av=0.0,*sigmax;
   FILE *fout;
+  MakeNoise *noise;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -200,23 +174,17 @@ int main(int argc,char** argv)
     }
   }
 
-  check_alloc(sigmax=(double*)malloc(sizeof(double)*dim));
-
-  if (!absolute) {
-    for (j=0;j<dim;j++)
-      variance(array[j],length,&av,&sigmax[j]);
+  noise=makenoise_add((double*const*)array,length,dim,noiselevel,absolute,
+		       cgaussian,iseed);
+  if (noise == NULL) {
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
   }
-
-  rnd_init(iseed);
-
-  for (i=0;i<10000;i++) rnd_1279();
-
-  for (j=0;j<dim;j++) {
-    if (!cgaussian)
-      equidistri(sigmax[j],j);
-    else
-      gauss(sigmax[j],j);
-  }
+  for (j=0;j<dim;j++)
+    free(array[j]);
+  free(array);
+  array=noise->series;
+  free(noise);
 
   if (!stout) {
     fout=fopen(outfile,"w");
@@ -242,7 +210,6 @@ int main(int argc,char** argv)
   for (i=0;i<dim;i++)
     free(array[i]);
   free(array);
-  free(sigmax);
   if (outfile != NULL)
     free(outfile);
   if (infile != NULL)

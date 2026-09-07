@@ -25,17 +25,16 @@
 #include <limits.h>
 #include <time.h>
 #include "routines/tsa.h"
+#include "../include/polyback.h"
 
 #define WID_STR "Does a backward elimination for a polynomial"
 
 char *outfile=NULL,stdo=1;
 char *parin=NULL,*infile=NULL;
 unsigned long length=ULONG_MAX,insample=ULONG_MAX,exclude=0;
-unsigned int plength=UINT_MAX;
 unsigned int column=1,dim=2,delay=1,down_to=1,step=1;
-unsigned int **order;
 unsigned int verbosity=0xff;
-double *series,*param;
+double *series;
 
 void show_options(char *progname)
 {
@@ -66,7 +65,7 @@ void show_options(char *progname)
 void scan_options(int n,char **in)
 {
   char *out;
-  
+
   if ((out=check_option(in,n,'l','u')) != NULL)
     sscanf(out,"%lu",&length);
   if ((out=check_option(in,n,'x','u')) != NULL)
@@ -94,87 +93,16 @@ void scan_options(int n,char **in)
   }
 }
 
-double polynom(unsigned long act,unsigned int which)
-{
-  unsigned int i,j;
-  double ret=1.0,h;
-  
-  for (i=0;i<dim;i++) {
-    h=series[act-i*delay];
-    for (j=0;j<order[which][i];j++)
-      ret *= h;
-  }
-  
-  return ret;
-}
-
-void make_fit(void)
-{
-  double **mat,*vec;
-  double h;
-  unsigned long n;
-  unsigned int i,j;
-
-  check_alloc(vec=(double*)malloc(sizeof(double)*plength));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*plength));
-  for (i=0;i<plength;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*plength));
-
-  for (i=0;i<plength;i++) {
-    vec[i]=0.0;
-    for (j=0;j<plength;j++)
-      mat[i][j]=0.0;
-  }
-  
-  for (n=(dim-1)*delay;n<insample-step;n++) {
-    for (i=0;i<plength;i++) {
-      vec[i] += series[n+step]*(h=polynom(n,i));
-      for (j=i;j<plength;j++)
-	mat[i][j] += polynom(n,j)*h;
-    }
-  }
-  for (i=0;i<plength;i++) {
-    vec[i] /= (insample-step-(dim-1)*delay);
-    for (j=i;j<plength;j++)
-      mat[j][i]=(mat[i][j]/=(insample-step-(dim-1)*delay));
-  }
-  
-  solvele(mat,vec,plength);
-
-  for (i=0;i<plength;i++)
-    param[i]=vec[i];
-
-  free(vec);
-  for (i=0;i<plength;i++)
-    free(mat[i]);
-  free(mat);
-}
-
-double forecast_error(unsigned long i0,unsigned long i1)
-{
-  unsigned int i;
-  unsigned long n;
-  double h,error=0.0;
-
-  for (n=i0+(dim-1)*delay;n<i1-step;n++) {
-    h=0.0;
-    for (i=0;i<plength;i++)
-      h += param[i]*polynom(n,i);
-    error += (series[n+step]-h)*(series[n+step]-h);
-  }
-  
-  return sqrt(error/(i1-i0-step-(dim-1)*delay));
-}
-
 int main(int argc,char **argv)
 {
-  int i,j,k,l,hl,ibest,counter;
-  char stdi=0,out_set=1,*parout;
-  double **dummy,besti,besto,withalli,withallo,errori=0.,erroro=0.;
-  double av,varianz;
+  int i,j;
+  char stdi=0,*parout;
+  double **dummy;
   unsigned long hlength=ULONG_MAX;
-  unsigned int **ini_params,*isout,offset;
+  unsigned int **ini_params,*isout,offset,*order_flat;
   FILE *file,*fpars;
+  PolybackResult *result;
+  PolybackError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -188,7 +116,7 @@ int main(int argc,char **argv)
   infile=search_datafile(argc,argv,&column,verbosity);
   if (infile == NULL)
     stdi=1;
-  
+
   if (outfile == NULL) {
     if (!stdi) {
       check_alloc(outfile=(char*)calloc(strlen(infile)+5,(size_t)1));
@@ -220,7 +148,7 @@ int main(int argc,char **argv)
 
   offset=(unsigned int)(log((double)hlength)/log(10.0)+1.0);
   check_alloc(parout=(char*)calloc(strlen(parin)+offset+2,(size_t)1));
-  
+
   check_alloc(ini_params=(unsigned int**)malloc(sizeof(int*)*hlength));
   for (i=0;i<hlength;i++) {
     check_alloc(ini_params[i]=(unsigned int*)malloc(sizeof(int)*dim));
@@ -228,127 +156,75 @@ int main(int argc,char **argv)
       ini_params[i][j]=(unsigned int)dummy[j][i];
   }
   check_alloc(isout=(unsigned int*)malloc(sizeof(int)*hlength));
+  for (i=0;i<hlength;i++)
+    isout[i]=0;
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  variance(series,length,&av,&varianz);
 
-  if (insample >= length) {
-    insample=length;
-    out_set=0;
-  }
-
-  check_alloc(order=(unsigned int**)malloc(sizeof(int*)*hlength));
-  check_alloc(param=(double*)malloc(sizeof(double)*hlength));
-  for (i=0;i<hlength;i++) {
-    isout[i]=0;
-    check_alloc(order[i]=(unsigned int*)malloc(sizeof(int)*dim));
+  check_alloc(order_flat=(unsigned int*)malloc(sizeof(unsigned int)*hlength*dim));
+  for (i=0;i<hlength;i++)
     for (j=0;j<dim;j++)
-      order[i][j]=ini_params[i][j];
-  }
-  plength=hlength;
+      order_flat[i*dim+j]=ini_params[i][j];
 
-  make_fit();
-  withalli=forecast_error(0LU,insample);
-  withallo=0.0;
-  if (out_set)
-    withallo=forecast_error(insample+1,length);
+  result=polyback_fit(series,length,order_flat,hlength,dim,delay,insample,
+		       step,down_to,&error);
+  free(order_flat);
+  if (result == NULL) {
+    if (error == POLYBACK_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    }
+    else {
+      fprintf(stderr,"Singular matrix! Exiting!\n");
+      exit(SOLVELE_SINGULAR_MATRIX);
+    }
+  }
 
   if (stdo) {
-    fprintf(stdout,"%lu %e %e\n",hlength,withalli/varianz,withallo/varianz);
+    fprintf(stdout,"%lu %e %e\n",hlength,result->error_in,result->error_out);
     fflush(stdout);
   }
   else {
     file=fopen(outfile,"w");
-    fprintf(file,"%lu %e %e\n",hlength,withalli/varianz,withallo/varianz);
+    fprintf(file,"%lu %e %e\n",hlength,result->error_in,result->error_out);
     fflush(file);
   }
-  free(param);
-  for (i=0;i<plength;i++)
-    free(order[i]);
-  free(order);
-  
-  if ((down_to < 1) || (down_to > hlength))
-    down_to=1;
 
-  for (i=1;i<=hlength-down_to;i++) {
-    plength=hlength-i;
-    besti=besto=0.0;
-    ibest= -1;
-    check_alloc(order=(unsigned int**)malloc(sizeof(int*)*plength));
-    check_alloc(param=(double*)malloc(sizeof(double)*plength));
-    for (j=0;j<plength;j++) {
-      check_alloc(order[j]=(unsigned int*)malloc(sizeof(int)*dim));
-    }
-    counter=plength;
-    for (j=0;j<hlength;j++)
-      if (!isout[j]) {
-	isout[j]++;
-	hl=0;
-	for (k=0;k<hlength;k++) {
-	  if (!isout[k]) {
-	    for (l=0;l<dim;l++)
-	      order[hl][l]=ini_params[k][l];
-	    hl++;
-	  }
-	}
-	make_fit();
-	errori=forecast_error(0LU,insample);
-	if (out_set)
-	  erroro=forecast_error(insample+1,length);
-	if (ibest == -1) {
-	  besti=errori;
-	  if (out_set)
-	    besto=erroro;
-	  ibest=j;
-	}
-	else {
-	  if (out_set) {
-	    if (erroro < besto) {
-	      besto=erroro;
-	      besti=errori;
-	      ibest=j;
-	    }
-	  }
-	  else {
-	    if (errori < besti) {
-	      besti=errori;
-	      besto=erroro;
-	      ibest=j;
-	    }
-	  }
-	}
-	isout[j]--;
-      }
-    isout[ibest]++;
-    free(param);
-    for (j=0;j<plength;j++)
-      free(order[j]);
-    free(order);
+  for (i=0;i<(int)result->n_levels;i++) {
+    unsigned long ibest=result->removed_index[i];
+
     if (stdo) {
-      fprintf(stdout,"%u %e %e ",plength,besti/varianz,besto/varianz);
+      fprintf(stdout,"%u %e %e ",result->level_n_terms[i],
+	      result->level_error_in[i],result->level_error_out[i]);
       for (j=0;j<dim;j++)
 	fprintf(stdout,"%u ",ini_params[ibest][j]);
       fprintf(stdout,"\n");
       fflush(stdout);
     }
     else {
-      fprintf(file,"%u %e %e ",plength,besti/varianz,besto/varianz);
+      fprintf(file,"%u %e %e ",result->level_n_terms[i],
+	      result->level_error_in[i],result->level_error_out[i]);
       for (j=0;j<dim;j++)
 	fprintf(file,"%u ",ini_params[ibest][j]);
       fprintf(file,"\n");
       fflush(file);
     }
-    sprintf(parout,"%s.%u",parin,plength);
+
+    isout[ibest]++;
+    sprintf(parout,"%s.%u",parin,result->level_n_terms[i]);
     fpars=fopen(parout,"w");
     for (j=0;j<hlength;j++)
       if (!isout[j]) {
+	int k;
 	for (k=0;k<dim;k++)
 	  fprintf(fpars,"%u ",ini_params[j][k]);
 	fprintf(fpars,"\n");
       }
     fclose(fpars);
   }
- 
+
+  polyback_free(result);
+
   if (!stdo)
     fclose(file);
   return 0;

@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/extrema.h"
 
 #define WID_STR "Determines the maxima (minima) of a possibly multivariate\
  time series"
@@ -101,7 +102,7 @@ int main(int argc,char **argv)
   char stdi=0;
   unsigned long i,j;
   double **series;
-  double x[3],a,b,c,lasttime,nexttime,time;
+  ExtremaResult *result;
   FILE *fout=NULL;
 
   if (scan_help(argc,argv))
@@ -152,64 +153,25 @@ int main(int argc,char **argv)
       fprintf(stderr,"Writing to stdout\n");
   }
   
-  lasttime=0.0;
-  x[0]=series[which][0];
-  x[1]=series[which][1];
-  for (i=2;i<length;i++) {
-    x[2]=series[which][i];
-    if (maxima) {
-      if ((x[1] >= x[0]) && (x[1] > x[2])) {
-	a=x[1];
-	b=(x[2]-x[0])/2.0;
-	c=(x[2]-2.0*x[1]+x[0])/2.0;
-	time= -b/2.0/c;
-	nexttime=(double)i-1.0+time;
-	if ((nexttime-lasttime) >= mintime) {
-	  for (j=0;j<dim;j++) {
-	    a=series[j][i-1];
-	    b=(series[j][i]-series[j][i-2])/2.0;
-	    c=(series[j][i]-2.0*series[j][i-1]+series[j][i-2])/2.0;
-	    if (!stdo)
-	      fprintf(fout,"%e ",a+b*time+c*sqr(time));
-	    else
-	      fprintf(stdout,"%e ",a+b*time+c*sqr(time));
-	  }
-	  if (!stdo)
-	    fprintf(fout,"%e\n",nexttime-lasttime);
-	  else
-	    fprintf(stdout,"%e\n",nexttime-lasttime);
-	  lasttime=nexttime;
-	}
-      }
-    }
-    else {
-      if ((x[1] <= x[0]) && (x[1] < x[2])) {
-	a=x[1];
-	b=(x[2]-x[0])/2.0;
-	c=(x[2]-2.0*x[1]+x[0])/2.0;
-	time= -b/2.0/c;
-	nexttime=(double)i-1.0+time;
-	if ((nexttime-lasttime) >= mintime) {
-	  for (j=0;j<dim;j++) {
-	    a=series[j][i-1];
-	    b=(series[j][i]-series[j][i-2])/2.0;
-	    c=(series[j][i]-2.0*series[j][i-1]+series[j][i-2])/2.0;
-	    if (!stdo)
-	      fprintf(fout,"%e ",a+b*time+c*sqr(time));
-	    else
-	      fprintf(stdout,"%e ",a+b*time+c*sqr(time));
-	  }
-	  if (!stdo)
-	    fprintf(fout,"%e\n",nexttime-lasttime);
-	  else
-	    fprintf(stdout,"%e\n",nexttime-lasttime);
-	  lasttime=nexttime;
-	}
-      }
-    }
-    x[0]=x[1];
-    x[1]=x[2];
+  result=extrema_find(series,length,dim,which,maxima,mintime);
+  if (result == NULL) {
+    fprintf(stderr,"The component to maxi(mini)mize has to be smaller or equal"
+	    "to the number\nof components! Exiting\n");
+    exit(EXTREMA_STRANGE_COMPONENT);
   }
+  for (i=0;i<result->count;i++) {
+    for (j=0;j<dim;j++) {
+      if (!stdo)
+	fprintf(fout,"%e ",result->point[i*dim+j]);
+      else
+	fprintf(stdout,"%e ",result->point[i*dim+j]);
+    }
+    if (!stdo)
+      fprintf(fout,"%e\n",result->dt[i]);
+    else
+      fprintf(stdout,"%e\n",result->dt[i]);
+  }
+  extrema_free(result);
   if (!stdo)
     fclose(fout);
 
@@ -220,6 +182,6 @@ int main(int argc,char **argv)
   for (i=0;i<dim;i++)
     free(series[i]);
   free(series);
-  
+
   return 0;
 }

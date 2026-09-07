@@ -28,22 +28,19 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/nrlazy.h"
 
 #define WID_STR "Performs simple noise reduction."
 
-#define BOX (unsigned int)512
-
 unsigned long length=ULONG_MAX,exclude=0;
-unsigned int comp=1,embed=5,delay=1,iterations=1,alldim;
+unsigned int comp=1,embed=5,delay=1,iterations=1;
 unsigned int verbosity=0x3;
 char *column=NULL;
 double eps=1.0e-3,epsvar;
 
 char *outfile=NULL,epsset=0,stdo=1,epsvarset=0;
 char *infile=NULL;
-double **series,**corr,*interval,*min,*hcor;
-long **box,*list,**nf;
-unsigned int **indexes;
+double **series;
 char dimset=0;
 
 void show_options(char *progname)
@@ -112,69 +109,116 @@ void scan_options(int n,char **in)
   }
 }
 
-unsigned int correct(unsigned long n)
+/* Writes out one iteration's corrected data, exactly as the original
+   inline loop inside main() used to: intermediate iterations only go to
+   'outfile.iter' and only if VER_USR1 is set, while the last iteration
+   also goes to stdout (if stdo) and/or 'outfile.iterations' (if !stdo or
+   VER_USR1) - see nrlazy_correct()'s on_iteration callback. series is
+   already scaled back to the original units, like nrlazy_correct()'s
+   final result. user_data is the CLI's `ofname` scratch buffer. */
+static void write_iteration(unsigned int iter,unsigned int iterations,
+			     double *const *series,
+			     const unsigned int *neighbors,void *user_data)
 {
-  int i,i1,i2,j,j1,k;
-  int ibox=BOX-1;
-  unsigned int hdel,hcomp;
-  double epsinv,dx;
-  long element,nfound=0;
+  char *ofname=(char*)user_data;
+  unsigned long n;
+  unsigned int i;
+  FILE *file=NULL;
 
-  epsinv=1./eps;
-
-  for (i=0;i<alldim;i++)
-    hcor[i]=0.0;
-
-  i=(int)(series[0][n]*epsinv)&ibox;
-  j=(int)(series[comp-1][n-(embed-1)*delay]*epsinv)&ibox;
-  
-  for (i1=i-1;i1<=i+1;i1++) {
-    i2=i1&ibox;
-    for (j1=j-1;j1<=j+1;j1++) {
-      element=box[i2][j1&ibox];
-      while (element != -1) {
-	for (k=0;k<alldim;k++) {
-	  hcomp=indexes[0][k];
-	  hdel=indexes[1][k];
-	  dx=fabs(series[hcomp][n-hdel]-series[hcomp][element-hdel]);
-	  if (dx > eps)
-	    break;
+  if ((verbosity&VER_USR1) && (iter < iterations)) {
+    sprintf(ofname,"%s.%d",outfile,iter);
+    test_outfile(ofname);
+    file=fopen(ofname,"w");
+    if (verbosity&VER_INPUT)
+      fprintf(stderr,"Opened %s for writing\n",ofname);
+    if (stdo && (iter == iterations)) {
+      if (verbosity&VER_INPUT)
+	fprintf(stderr,"Writing to stdout\n");
+    }
+    for (n=0;n<length;n++) {
+      if (stdo && (iter == iterations)) {
+	if (verbosity&VER_USR2) {
+	  for (i=0;i<comp;i++)
+	    fprintf(stdout,"%e ",series[i][n]);
+	  fprintf(stdout,"%u\n",neighbors[n]);
 	}
-	if (k == alldim) {
-	  nfound++;
-	  for (k=0;k<alldim;k++) {
-	    hcomp=indexes[0][k];
-	    hdel=indexes[1][k];
-	    hcor[k] += series[hcomp][element-hdel];
-	  }
+	else {
+	  fprintf(stdout,"%e",series[0][n]);
+	  for (i=1;i<comp;i++)
+	    fprintf(stdout,"%e ",series[i][n]);
+	  fprintf(stdout,"\n");
 	}
-	element=list[element];
+      }
+      if (verbosity&VER_USR2) {
+	for (i=0;i<comp;i++)
+	  fprintf(file,"%e ",series[i][n]);
+	fprintf(file,"%u\n",neighbors[n]);
+      }
+      else {
+	fprintf(file,"%e",series[0][n]);
+	for (i=1;i<comp;i++)
+	  fprintf(file," %e",series[i][n]);
+	fprintf(file,"\n");
       }
     }
+    fclose(file);
   }
-  for (k=0;k<alldim;k++) {
-    hcomp=indexes[0][k];
-    hdel=indexes[1][k];
-    corr[hcomp][n-hdel] += hcor[k]/nfound;
-    nf[hcomp][n-hdel]++;
+  if (iter == iterations) {
+    if (!stdo || (verbosity&VER_USR1)) {
+      sprintf(ofname,"%s.%d",outfile,iter);
+      test_outfile(ofname);
+      file=fopen(ofname,"w");
+      if (verbosity&VER_INPUT)
+	fprintf(stderr,"Opened %s for writing\n",ofname);
+      if (stdo && (iter == iterations)) {
+	if (verbosity&VER_INPUT)
+	  fprintf(stderr,"Writing to stdout\n");
+      }
+    }
+    for (n=0;n<length;n++) {
+      if (stdo) {
+	if (verbosity&VER_USR2) {
+	  for (i=0;i<comp;i++)
+	    fprintf(stdout,"%e ",series[i][n]);
+	  fprintf(stdout,"%u\n",neighbors[n]);
+	}
+	else {
+	  fprintf(stdout,"%e",series[0][n]);
+	  for (i=1;i<comp;i++)
+	    fprintf(stdout," %e",series[i][n]);
+	  fprintf(stdout,"\n");
+	}
+      }
+      if (!stdo || (verbosity&VER_USR1)) {
+	if (verbosity&VER_USR2) {
+	  for (i=0;i<comp;i++)
+	    fprintf(file,"%e ",series[i][n]);
+	  fprintf(file,"%u\n",neighbors[n]);
+	}
+	else {
+	  fprintf(file,"%e",series[0][n]);
+	  for (i=1;i<comp;i++)
+	    fprintf(file," %e",series[i][n]);
+	  fprintf(file,"\n");
+	}
+      }
+    }
+    if (!stdo || (verbosity&VER_USR1))
+      fclose(file);
   }
-
-  return nfound;
 }
 
 int main(int argc,char **argv)
 {
   char *ofname;
   char stdi=0;
-  int iter;
-  unsigned int *nmf;
-  unsigned long n,i;
-  double dav,dvar,maxinterval,maxdvar;
-  FILE *file=NULL;
+  unsigned long i;
+  double bad_value=0.0;
+  NRLazyResult *result;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -208,166 +252,21 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&length,exclude,&comp,column,
 				      dimset,verbosity);
 
-  check_alloc(interval=(double*)malloc(sizeof(double)*comp));
-  check_alloc(min=(double*)malloc(sizeof(double)*comp));
-
-  maxinterval=maxdvar=0.0;
-  for (i=0;i<comp;i++) {
-    rescale_data(series[i],length,&min[i],&interval[i]);
-    if (interval[i] > maxinterval) maxinterval=interval[i];
-    variance(series[i],length,&dav,&dvar);
-    if (dvar > maxdvar)  maxdvar=dvar;
+  result=nrlazy_correct((double *const *)series,length,comp,embed,delay,
+			 iterations,epsset?eps:(double)NAN,
+			 epsvarset?epsvar:(double)NAN,&bad_value,
+			 write_iteration,ofname);
+  if (result == NULL) {
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",bad_value,bad_value);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
   }
-  alldim=comp*embed;
-
-  check_alloc(nmf=(unsigned int*)malloc(sizeof(int)*length));
-  check_alloc(list=(long*)malloc(sizeof(long)*length));
-  check_alloc(box=(long**)malloc(sizeof(long*)*BOX));
-  for (n=0;n<BOX;n++)
-    check_alloc(box[n]=(long*)malloc(sizeof(long)*BOX));
-
-  check_alloc(nf=(long**)malloc(sizeof(long*)*comp));
-  check_alloc(corr=(double**)malloc(sizeof(double*)*comp));
-  for (i=0;i<comp;i++) {
-    check_alloc(nf[i]=(long*)malloc(sizeof(long)*length));
-    check_alloc(corr[i]=(double*)malloc(sizeof(double)*length));
-  }
-
-  indexes=make_multi_index(comp,embed,delay);
-
-  if (epsset)
-    eps/=maxinterval;
-  else
-    eps=1.0/1000.;
-
-  if (epsvarset)
-    eps=epsvar*maxdvar;
-
-  for (iter=1;iter<=iterations;iter++) {
-    make_multi_box2(series,box,list,length,BOX,comp,embed,delay,eps);
-    for (n=0;n<length;n++) {
-      for (i=0;i<comp;i++) {
-	corr[i][n]=0.0;
-	nf[i][n]=0;
-      }
-      nmf[n]=1;
-    }
-    
-    check_alloc(hcor=(double*)malloc(sizeof(double)*alldim));
-    for (n=(embed-1)*delay;n<length;n++)
-      nmf[n]=correct(n);
-    free(hcor);
-    
-    for (n=0;n<length;n++)
-      for (i=0;i<comp;i++)
-	if (nf[i][n])
-	  series[i][n]=corr[i][n]/nf[i][n];
-
-    if ((verbosity&VER_USR1) && (iter < iterations)) {
-      sprintf(ofname,"%s.%d",outfile,iter);
-      test_outfile(ofname);
-      file=fopen(ofname,"w");
-      if (verbosity&VER_INPUT)
-	fprintf(stderr,"Opened %s for writing\n",ofname);
-      if (stdo && (iter == iterations)) {
-	if (verbosity&VER_INPUT)
-	  fprintf(stderr,"Writing to stdout\n");
-      }
-      for (n=0;n<length;n++) {
-	if (stdo && (iter == iterations)) {
-	  if (verbosity&VER_USR2) {
-	    for (i=0;i<comp;i++) 
-	      fprintf(stdout,"%e ",series[i][n]*interval[i]+min[i]);
-	    fprintf(stdout,"%u\n",nmf[n]);
-	  }
-	  else {
-	    fprintf(stdout,"%e",series[0][n]*interval[0]+min[0]);
-	    for (i=1;i<comp;i++)
-	      fprintf(stdout,"%e ",series[i][n]*interval[i]+min[i]);
-	    fprintf(stdout,"\n");
-	  }
-	}
-	if (verbosity&VER_USR2) {
-	  for (i=0;i<comp;i++) 
-	    fprintf(file,"%e ",series[i][n]*interval[i]+min[i]);
-	  fprintf(file,"%u\n",nmf[n]);
-	}
-	else {
-	  fprintf(file,"%e",series[0][n]*interval[0]+min[0]);
-	  for (i=1;i<comp;i++)
-	    fprintf(file," %e",series[i][n]*interval[i]+min[i]);
-	  fprintf(file,"\n");
-	}
-      }
-      fclose(file);
-    }
-    if (iter == iterations) {
-      if (!stdo || (verbosity&VER_USR1)) {
-	sprintf(ofname,"%s.%d",outfile,iter);
-	test_outfile(ofname);
-	file=fopen(ofname,"w");
-	if (verbosity&VER_INPUT)
-	  fprintf(stderr,"Opened %s for writing\n",ofname);
-	if (stdo && (iter == iterations)) {
-	  if (verbosity&VER_INPUT)
-	    fprintf(stderr,"Writing to stdout\n");
-	}
-      }
-      for (n=0;n<length;n++) {
-	if (stdo) {
-	  if (verbosity&VER_USR2) {
-	    for (i=0;i<comp;i++) 
-	      fprintf(stdout,"%e ",series[i][n]*interval[i]+min[i]);
-	    fprintf(stdout,"%u\n",nmf[n]);
-	  }
-	  else {
-	    fprintf(stdout,"%e",series[0][n]*interval[0]+min[0]);
-	    for (i=1;i<comp;i++)
-	      fprintf(stdout," %e",series[i][n]*interval[i]+min[i]);
-	    fprintf(stdout,"\n");
-	  }
-	}
-	if (!stdo || (verbosity&VER_USR1)) {
-	  if (verbosity&VER_USR2) {
-	    for (i=0;i<comp;i++) 
-	      fprintf(file,"%e ",series[i][n]*interval[i]+min[i]);
-	    fprintf(file,"%u\n",nmf[n]);
-	  }
-	  else {
-	    fprintf(file,"%e",series[0][n]*interval[0]+min[0]);
-	    for (i=1;i<comp;i++)
-	      fprintf(file," %e",series[i][n]*interval[i]+min[i]);
-	    fprintf(file,"\n");
-	  }
-	}
-      }
-      if (!stdo || (verbosity&VER_USR1))
-	fclose(file);
-    }
-  }
+  nrlazy_free(result);
 
   /*cleaning up */
-  for (i=0;i<comp;i++) {
+  for (i=0;i<comp;i++)
     free(series[i]);
-    free(nf[i]);
-    free(corr[i]);
-  }
   free(series);
-  free(nf);
-  free(corr);
-
-  for (i=0;i<2;i++)
-    free(indexes[i]);
-  free(indexes);
-
-  free(list);
-  free(nmf);
-  free(interval);
-  free(min);
-
-  for (i=0;i<BOX;i++)
-    free(box[i]);
-  free(box);
 
   if (outfile != NULL)
     free(outfile);

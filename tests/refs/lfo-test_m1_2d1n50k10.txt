@@ -1,0 +1,2 @@
+#Relative forecast errors for each component:
+8.256573e-01

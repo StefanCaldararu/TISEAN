@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include "routines/tsa.h"
+#include "../include/nstat_z.h"
 
 #define WID_STR "Tests for nonstationarity by means of the average\n\t\
 forecast error for a zeroth order fit"
@@ -33,19 +34,12 @@ forecast error for a zeroth order fit"
 #include <math.h>
 #endif
 
-/*number of boxes for the neighbor search algorithm*/
-#define NMAX 128
-
-unsigned int nmax=(NMAX-1);
-long **box,*list;
-unsigned long *found;
-double *series,*series1,*series2;
-double interval,min,epsilon;
+double *series;
 
 char epsset=0,causalset=0;
 char *infile=NULL;
 char *outfile=NULL,stdo=1,centerset=0;
-char *firstwindow,*secondwindow,**window;
+char *firstwindow,*secondwindow;
 unsigned int COLUMN=1,pieces;
 unsigned int verbosity=0xff;
 int DIM=3,DELAY=1,MINN=30,STEP=1;
@@ -254,9 +248,6 @@ void scan_options(int n,char **in)
     check_alloc(secondwindow=(char*)malloc(pieces));
     for (i=0;i<pieces;i++)
       firstwindow[i]=secondwindow[i]=1;
-    check_alloc(window=(char**)malloc(sizeof(char*)*pieces));
-    for (i=0;i<pieces;i++)
-      check_alloc(window[i]=(char*)malloc(pieces));
   }
   if (!piecesset) {
     fprintf(stderr,"\tThe -# option wasn't set. Please add it!\n");
@@ -297,29 +288,14 @@ void scan_options(int n,char **in)
   }
 }
 
-double make_fit(long act,unsigned long number)
-{
-  double casted=0.0,*help;
-  int i;
-  
-  help=series1+STEP;
-  for (i=0;i<number;i++) {
-    casted += help[found[i]];
-  }
-  casted /= number;
-
-  return sqr(casted-series2[act+STEP]);
-}
-
 int main(int argc,char **argv)
 {
-  char stdi=0;
-  char alldone,*done,sdone;
-  long i,first,second,pstart;
-  unsigned long *hfound;
-  unsigned long actfound;
-  unsigned long clength;
-  double *rms,av,error;
+  char stdi=0,sdone;
+  long i,first;
+  unsigned long ipair;
+  double dmin,dinterval;
+  NstatZ *result;
+  NstatZError error;
   FILE *file=NULL;
 
   if (scan_help(argc,argv))
@@ -354,37 +330,39 @@ int main(int argc,char **argv)
 
   series=(double*)get_series(infile,&LENGTH,exclude,COLUMN,verbosity);
 
-  rescale_data(series,LENGTH,&min,&interval);
-  
-  check_alloc(list=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(found=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(hfound=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(done=(char*)malloc(sizeof(char)*LENGTH));
-  check_alloc(box=(long**)malloc(sizeof(long*)*NMAX));
-
-  for (i=0;i<NMAX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*NMAX));
-    
-  if (epsset)
-    EPS0 /= interval;
-
-  clength=(LENGTH-(DIM-1)*DELAY)/pieces;
-  if ((clength-(DIM-1)*DELAY-STEP) < MINN) {
-    fprintf(stderr,"You chose too many pieces and will never find enough"
-	    " neighbors!\n");
-    exit(NSTAT_Z__TOO_MANY_PIECES);
+  result=nstat_z_compute(series,LENGTH,pieces,firstwindow,secondwindow,
+			  firstoffset,secondoffset,(unsigned int)DIM,
+			  (unsigned int)DELAY,(unsigned int)MINN,
+			  (unsigned long)STEP,causal,center,centerset,
+			  EPS0,epsset,EPSF,&error);
+  if (result == NULL) {
+    if (error == NSTAT_Z_ERR_ZERO_INTERVAL) {
+      /* Reproduce rescale_data()'s exact message. nstat_z_compute() rescales
+	 a private copy and doesn't report the range, but it never touches
+	 our own copy of series, so redo the same scan here. */
+      dmin=dinterval=series[0];
+      for (i=1;i<LENGTH;i++) {
+	if (series[i] < dmin) dmin=series[i];
+	if (series[i] > dinterval) dinterval=series[i];
+      }
+      dinterval -= dmin;
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",dmin,dmin+dinterval);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    else if (error == NSTAT_Z_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    }
+    else {
+      fprintf(stderr,"You chose too many pieces and will never find enough"
+	      " neighbors!\n");
+      exit(NSTAT_Z__TOO_MANY_PIECES);
+    }
   }
-  check_alloc(rms=(double*)malloc(sizeof(double)*pieces));
-  for (i=0;i<pieces;i++) {
-    series1=series+i*clength;
-    variance(series1,clength,&av,&rms[i]);
-  }
-  
-  pstart=(DIM-1)*DELAY;
-  if (!centerset)
-    center=clength-STEP;
-  else
-    center=(center < (clength-STEP-pstart)) ? center : clength-STEP-pstart;
+
+  free(firstwindow);
+  free(secondwindow);
 
   if (stdo) {
     if (verbosity&VER_INPUT)
@@ -395,65 +373,21 @@ int main(int argc,char **argv)
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
   }
-  for (first=0;first<pieces;first++)
-    for (second=0;second<pieces;second++)
-      window[first][second]=firstwindow[first]&&secondwindow[second];
-  if (firstoffset != -1) {
-    for (second=0;second<pieces;second++)
-      for (first=second-firstoffset;first<=second+firstoffset;first++)
-	if ((first >= 0) && (first < pieces))
-	  window[first][second]=secondwindow[second];
-  }
-  if (secondoffset != -1) {
-    for (first=0;first<pieces;first++)
-      for (second=first-secondoffset;second<=first+secondoffset;second++)
-	if ((second >= 0) && (second < pieces))
-	  window[first][second]=firstwindow[first];
-  }
 
-  free(firstwindow);
-  free(secondwindow);
-
+  ipair=0;
   for (first=0;first<pieces;first++) {
     sdone=0;
-    for (second=0;second<pieces;second++) {
-      if (window[first][second]) {
-	sdone=1;
-	series1=series+first*clength;
-	series2=series+second*clength;
-	for (i=0;i<LENGTH;i++)
-	  done[i]=0;
-	alldone=0;
-	epsilon=EPS0/EPSF;
-	error=0.0;
-	while (!alldone) {
-	  alldone=1;
-	  epsilon*=EPSF;
-	  make_box(series1,box,list,clength-STEP,NMAX,(unsigned int)DIM,
-		   (unsigned int)DELAY,epsilon);
-	  for (i=pstart;i<pstart+center;i++)
-	    if (!done[i]) {
-	      actfound=find_neighbors(series1,box,list,series2+i,clength,NMAX,
-				      (unsigned int)DIM,(unsigned int)DELAY,
-				      epsilon,hfound);
-	      actfound=exclude_interval(actfound,i-causal+1,
-					i+causal+pstart-1,hfound,found);
-	      if (actfound >= MINN) {
-		error += make_fit(i,actfound);
-		done[i]=1;
-	      }
-	      alldone &= done[i];
-	    }
-	}
-	if (stdo)
-	  fprintf(stdout,"%ld %ld %e\n",first+1,second+1,
-		  sqrt(error/center)/rms[second]);
-	else {
-	  fprintf(file,"%ld %ld %e\n",first+1,second+1,
-		  sqrt(error/center)/rms[second]);
-	  fflush(file);
-	}
+    while ((ipair < result->n_pairs) && (result->first[ipair] == (unsigned int)first)) {
+      sdone=1;
+      if (stdo)
+	fprintf(stdout,"%ld %ld %e\n",first+1,(long)result->second[ipair]+1,
+		result->value[ipair]);
+      else {
+	fprintf(file,"%ld %ld %e\n",first+1,(long)result->second[ipair]+1,
+		result->value[ipair]);
+	fflush(file);
       }
+      ipair++;
     }
     if (sdone) {
       if (stdo)
@@ -462,23 +396,13 @@ int main(int argc,char **argv)
 	fprintf(file,"\n");
     }
   }
-  
+
   if (!stdo)
     fclose(file);
 
   if (outfile != NULL)
     free(outfile);
-  free(list);
-  free(found);
-  free(hfound);
-  free(done);
-  for (i=0;i<NMAX;i++)
-    free(box[i]);
-  free(box);
-  for (i=0;i<pieces;i++)
-    free(window[i]);
-  free(window);
-  free(rms);
+  nstat_z_free(result);
   free(series);
 
   return 0;

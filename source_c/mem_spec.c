@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/mem_spec.h"
 #include <math.h>
 
 #define WID_STR "Estimates the power spectrum of the data"
@@ -94,71 +95,13 @@ void scan_options(int argc,char **argv)
   }
 }
 
-double getcoefs(double *coef)
-{
-  long i,j,hp=(long)poles-1;
-  double ret=0.0,*cov,*help,h1,h2;
-  
-  check_alloc(cov=(double*)malloc(sizeof(double)*length));
-  check_alloc(help=(double*)malloc(sizeof(double)*poles));
-
-  for (i=0;i<length;i++) 
-    ret += series[i]*series[i];
-  ret /= length;
-  
-  for (i=0;i<length;i++)
-    cov[i]=series[i];
-  series++;
-
-  for (i=0;i<poles;i++) {
-    h1=h2=0.0;
-    for (j=0;j<length-i-1;j++) {
-      h1 += cov[j]*series[j];
-      h2 += cov[j]*cov[j]+series[j]*series[j];
-    }
-    coef[i]=2.0*h1/h2;
-    ret *= (1.0-coef[i]*coef[i]);
-    for (j=0;j<i;j++)
-      coef[j]=help[j]-coef[i]*help[i-1-j];
-    if (i == hp)
-      break;
-    for (j=0;j<=i;j++)
-      help[j]=coef[j];
-    for (j=0;j<length-i-1;j++) {
-      cov[j] -= help[i]*series[j];
-      series[j]=series[j+1]-help[i]*cov[j+1];
-    }
-  }
-  free(cov);
-  free(help);
-
-  return ret;
-}
-double powcoef(double dt,double *coef)
-{
-  int i;
-  double si=0.0,sr=1.0,zr=1.0,zi=0.0,h,omdt,hr,hi;
-  
-  omdt=2.0*M_PI*dt;
-  hr=cos(omdt);
-  hi=sin(omdt);
-  
-  for (i=0;i<poles;i++) {
-    h=zr;
-    zr=zr*hr-zi*hi;
-    zi=h*hi+zi*hr;
-    sr -= coef[i]*zr;
-    si -= coef[i]*zi;
-  }
-  return (sr*sr+si*si);
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  double fdt,pm,pow_spec,*cof,av,var;
+  double pm,*cof,*freq,*spec;
   long i;
   FILE *fout;
+  MemSpecModel *model;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
@@ -195,13 +138,17 @@ int main(int argc,char **argv)
     exit(MEM_SPEC_TOO_MANY_POLES);
   }
 
-  variance(series,length,&av,&var);
-  for (i=0;i<length;i++)
-    series[i] -= av;
+  model=mem_spec_fit(series,length,poles);
+  if (model == NULL) {
+    fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+    exit(VARIANCE_VAR_EQ_ZERO);
+  }
+  pm=model->sigma2;
+  cof=model->coef;
 
-  check_alloc(cof=(double*)malloc(sizeof(double)*poles));
-
-  pm=getcoefs(cof);
+  check_alloc(freq=(double*)malloc(sizeof(double)*out));
+  check_alloc(spec=(double*)malloc(sizeof(double)*out));
+  mem_spec_spectrum(model,out,samplingrate,freq,spec);
 
   if (!stdo) {
     fout=fopen(outfile,"w");
@@ -213,10 +160,8 @@ int main(int argc,char **argv)
 	fprintf(fout,"#%ld %e\n",i+1,cof[i]);
     }
     for(i=0;i<out;i++) {
-      fdt=i/(2.0*out);
-      pow_spec=powcoef(fdt,cof);
-      fprintf(fout,"%e %e\n",fdt*samplingrate,
-	      pm/pow_spec/sqrt((double)length));
+      fprintf(fout,"%e %e\n",freq[i],
+	      spec[i]/sqrt((double)length));
       fflush(fout);
     }
     fclose(fout);
@@ -230,13 +175,15 @@ int main(int argc,char **argv)
 	fprintf(stdout,"#%ld %e\n",i+1,cof[i]);
     }
     for(i=0;i<out;i++) {
-      fdt=i/(2.0*out);
-      pow_spec=powcoef(fdt,cof);
-      fprintf(stdout,"%e %e\n",fdt*samplingrate,
-	      pm/pow_spec/*/sqrt((double)length)*/);
+      fprintf(stdout,"%e %e\n",freq[i],
+	      spec[i]/*/sqrt((double)length)*/);
     }
   }
-  
+
+  mem_spec_free(model);
+  free(freq);
+  free(spec);
+
   return 0;
 }
 

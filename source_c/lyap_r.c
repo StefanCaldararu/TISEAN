@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <string.h>
 #include "routines/tsa.h"
+#include "../include/lyap_r.h"
 
 #define WID_STR "Estimates the maximal Lyapunov exponent; Rosenstein et al."
 
@@ -99,88 +100,20 @@ void scan_options(int n,char **argv)
       outfile=out;
 }
       
-void put_in_boxes(void)
+void print_progress(double peps, long found0, void *user_data)
 {
-  int i,j,x,y,del;
-  
-  for (i=0;i<NMAX;i++)
-    for (j=0;j<NMAX;j++)
-      box[i][j]= -1;
-
-  del=delay*(dim-1);
-  for (i=0;i<length-del-steps;i++) {
-    x=(int)(series[i]*epsinv)&nmax;
-    y=(int)(series[i+del]*epsinv)&nmax;
-    list[i]=box[x][y];
-    box[x][y]=i;
-  }
-}
-
-char make_iterate(long act)
-{
-  char ok=0;
-  int x,y,i,j,i1,k,del1=dim*delay;
-  long element,minelement= -1;
-  double dx,mindx=1.0;
-
-  x=(int)(series[act]*epsinv)&nmax;
-  y=(int)(series[act+delay*(dim-1)]*epsinv)&nmax;
-  for (i=x-1;i<=x+1;i++) {
-    i1=i&nmax;
-    for (j=y-1;j<=y+1;j++) {
-      element=box[i1][j&nmax];
-      while (element != -1) {
-	if (labs(act-element) > mindist) {
-	  dx=0.0;
-	  for (k=0;k<del1;k+=delay) {
-	    dx += (series[act+k]-series[element+k])*
-	      (series[act+k]-series[element+k]);
-	    if (dx > eps*eps)
-	      break;
-	  }
-	  if (k==del1) {
-	    if (dx < mindx) {
-	      ok=1;
-	      if (dx > 0.0) {
-		mindx=dx;
-		minelement=element;
-	      }
-	    }
-	  }
-	}
-	element=list[element];
-      }
-    }
-  }
-  if ((minelement != -1) ) {
-    act--;
-    minelement--;
-    for (i=0;i<=steps;i++) {
-      act++;
-      minelement++;
-      dx=0.0;
-      for (j=0;j<del1;j+=delay) {
-	dx += (series[act+j]-series[minelement+j])*
-	  (series[act+j]-series[minelement+j]);
-      }
-      if (dx > 0.0) {
-	found[i]++;
-	lyap[i] += log(dx);
-      }
-    }
-  }
-  return ok;
+  if (verbosity&VER_USR1)
+    fprintf(stderr,"epsilon: %e already found: %ld\n",peps,found0);
 }
 
 int main(int argc,char **argv)
 {
-  char stdi=0,*done,alldone;
+  char stdi=0;
   int i;
-  long n;
-  long maxlength;
   double min,max;
   FILE *file;
-  
+  LyapR *result;
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
 
@@ -208,44 +141,35 @@ int main(int argc,char **argv)
   test_outfile(outfile);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  rescale_data(series,length,&min,&max);
 
-  if (epsset)
-    eps0 /= max;
-
-  check_alloc(list=(long*)malloc(length*sizeof(long)));
-  check_alloc(lyap=(double*)malloc((steps+1)*sizeof(double)));
-  check_alloc(found=(long*)malloc((steps+1)*sizeof(long)));
-  check_alloc(done=(char*)malloc(length));
-
-  for (i=0;i<=steps;i++) {
-    lyap[i]=0.0;
-    found[i]=0;
+  /* Mirrors rescale_data()'s own exit condition, checked here (instead of
+     inside lyap_r_compute()) so that, exactly like the original, no output
+     file gets created/truncated when the data is degenerate. */
+  min=max=series[0];
+  for (i=1;i<length;i++) {
+    if (series[i] < min) min=series[i];
+    if (series[i] > max) max=series[i];
   }
-  for (i=0;i<length;i++)
-    done[i]=0;
-  
-  maxlength=length-delay*(dim-1)-steps-1-mindist;
-  alldone=0;
+  max -= min;
+  if (max == 0.0) {
+    fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	    "\t\tno sense to continue. Exiting!\n\n",min,min+max);
+    exit(RESCALE_DATA_ZERO_INTERVAL);
+  }
+
   file=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
-  for (eps=eps0;!alldone;eps*=1.1) {
-    epsinv=1.0/eps;
-    put_in_boxes();
-    alldone=1;
-    for (n=0;n<=maxlength;n++) {
-      if (!done[n])
-	done[n]=make_iterate(n);
-      alldone &= done[n];
-    }
-    if (verbosity&VER_USR1)
-      fprintf(stderr,"epsilon: %e already found: %ld\n",eps*max,found[0]);
-  } 
+
+  result=lyap_r_compute(series,length,dim,delay,mindist,steps,eps0,epsset,
+			 print_progress,NULL);
+
   for (i=0;i<=steps;i++)
-    if (found[i])
-      fprintf(file,"%d %e\n",i,lyap[i]/found[i]/2.0);
+    if (result->found[i])
+      fprintf(file,"%d %e\n",i,result->lyap[i]/result->found[i]/2.0);
   fclose(file);
+
+  lyap_r_free(result);
 
   return 0;
 }

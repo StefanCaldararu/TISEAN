@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/rescale.h"
 
 #define WID_STR "Rescales the data"
 
@@ -96,10 +97,11 @@ int main(int argc,char **argv)
 {
   char stdi=0;
   FILE *file;
-  double min,max;
-  double av,varianz;
-  long i,n;
-    
+  long i;
+  unsigned int n;
+  RescaleResult *result;
+  RescaleError error;
+
   if (scan_help(argc,argv))
     show_options(argv[0]);
 
@@ -140,21 +142,24 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&length,exclude,&dim,column,
 				      dimset,verbosity);
 
-  for (n=0;n<dim;n++) {
-    variance(series[n],length,&av,&varianz);
-    
-    if (set_av)
-      for (i=0;i<length;i++)
-	series[n][i] -= av;
-
-    if (set_var)
-      for (i=0;i<length;i++)
-	series[n][i] /= varianz;
-  
-    if (!set_var && !set_av) {
-      rescale_data(series[n],length,&min,&max);
-      for (i=0;i<length;i++)
-	series[n][i]=series[n][i]*(xmax-xmin)+xmin;
+  result=rescale_compute(series,length,dim,set_av,set_var,xmin,xmax,&error);
+  if (result == NULL) {
+    if (error == RESCALE_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    }
+    else if (error == RESCALE_ERR_WRONG_INTERVAL) {
+      fprintf(stderr,"Choosing the minimum larger or equal the maximum\n"
+	      "makes no sense. Exiting!\n");
+      exit(RESCALE__WRONG_INTERVAL);
+    }
+    else {
+      /* RESCALE_ERR_EMPTY_SERIES: not reachable via the CLI in practice -
+	 get_multi_series() itself already exits (GET_MULTI_SERIES_NO_LINES)
+	 before length can be 0 - but handled for any other caller of this
+	 main() code path. */
+      fprintf(stderr,"rescale: no data to rescale. Exiting!\n");
+      exit(GET_MULTI_SERIES_NO_LINES);
     }
   }
 
@@ -162,9 +167,9 @@ int main(int argc,char **argv)
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
     for (i=0;i<length;i++) {
-      fprintf(stdout,"%e",series[0][i]);
+      fprintf(stdout,"%e",result->data[0][i]);
       for (n=1;n<dim;n++)
-	fprintf(stdout," %e",series[n][i]);
+	fprintf(stdout," %e",result->data[n][i]);
       fprintf(stdout,"\n");
     }
   }
@@ -173,13 +178,15 @@ int main(int argc,char **argv)
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
     for (i=0;i<length;i++) {
-      fprintf(file,"%e",series[0][i]);
+      fprintf(file,"%e",result->data[0][i]);
       for (n=1;n<dim;n++)
-	fprintf(file," %e",series[n][i]);
+	fprintf(file," %e",result->data[n][i]);
       fprintf(file,"\n");
     }
     fclose(file);
   }
+
+  rescale_free(result);
 
   return 0;
 }

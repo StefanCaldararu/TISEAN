@@ -29,6 +29,7 @@
 #include <limits.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/false_nearest.h"
 
 #define WID_STR "Determines the fraction of false nearest neighbors."
 
@@ -37,20 +38,12 @@ char *infile=NULL;
 char stdo=1,dimset=0;
 char *column=NULL;
 unsigned long length=ULONG_MAX,exclude=0,theiler=0;
-unsigned int delay=1,maxdim=5,minemb=1;
+unsigned int delay=1,minemb=1;
 unsigned int comp=1,maxemb=5;
 unsigned int verbosity=0xff;
 double rt=2.0;
 double eps0=1.0e-5;
 double **series;
-double aveps,vareps;
-double varianz;
-
-#define BOX 1024
-int ibox=BOX-1;
-long **box,*list;
-unsigned int *vcomp,*vemb;
-unsigned long toolarge;
 
 void show_options(char *progname)
 {
@@ -94,7 +87,6 @@ void scan_options(int n,char **in)
     sscanf(out,"%u",&minemb);
   if ((out=check_option(in,n,'M','2')) != NULL) {
     sscanf(out,"%u,%u",&comp,&maxemb);
-    maxdim=comp*(maxemb+1);
     dimset=1;
   }
   if ((out=check_option(in,n,'d','u')) != NULL)
@@ -112,89 +104,19 @@ void scan_options(int n,char **in)
   }
 }
 
-void mmb(unsigned int hdim,unsigned int hemb,double eps)
-{
-  unsigned long i;
-  long x,y;
-
-  for (x=0;x<BOX;x++)
-    for (y=0;y<BOX;y++)
-      box[x][y] = -1;
-
-  for (i=0;i<length-(maxemb+1)*delay;i++) {
-    x=(long)(series[0][i]/eps)&ibox;
-    y=(long)(series[hdim][i+hemb]/eps)&ibox;
-    list[i]=box[x][y];
-    box[x][y]=i;
-  }
-}
-
-char find_nearest(long n,unsigned int dim,double eps)
-{
-  long x,y,x1,x2,y1,i,i1,ic,ie;
-  long element,which= -1;
-  double dx,maxdx,mindx=1.1,hfactor,factor;
-
-  ic=vcomp[dim];
-  ie=vemb[dim];
-  x=(long)(series[0][n]/eps)&ibox;
-  y=(long)(series[ic][n+ie]/eps)&ibox;
-  
-  for (x1=x-1;x1<=x+1;x1++) {
-    x2=x1&ibox;
-    for (y1=y-1;y1<=y+1;y1++) {
-      element=box[x2][y1&ibox];
-      while (element != -1) {
-	if (labs(element-n) > theiler) {
-	  maxdx=fabs(series[0][n]-series[0][element]);
-	  for (i=1;i<=dim;i++) {
-	    ic=vcomp[i];
-	    i1=vemb[i];
-	    dx=fabs(series[ic][n+i1]-series[ic][element+i1]);
-	    if (dx > maxdx)
-	      maxdx=dx;
-	  }
-	  if ((maxdx < mindx) && (maxdx > 0.0)) {
-	    which=element;
-	    mindx=maxdx;
-	  }
-	}
-	element=list[element];
-      }
-    }
-  }
-
-  if ((which != -1) && (mindx <= eps) && (mindx <= varianz/rt)) {
-    aveps += mindx;
-    vareps += mindx*mindx;
-    factor=0.0;
-    for (i=1;i<=comp;i++) {
-      ic=vcomp[dim+i];
-      ie=vemb[dim+i];
-      hfactor=fabs(series[ic][n+ie]-series[ic][which+ie])/mindx;
-      if (hfactor > factor) 
-	factor=hfactor;
-    }
-    if (factor > rt)
-      toolarge++;
-    return 1;
-  }
-  return 0;
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
   FILE *file=NULL;
-  double min,inter=0.0,ind_inter,epsilon,av,ind_var;
-  char *nearest,alldone;
-  long i;
-  unsigned int dim,emb;
-  unsigned long donesofar;
+  unsigned long i,k;
+  unsigned int c;
+  double cmin,cinterval;
+  FalseNearest *result;
+  FalseNearestError error;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 #ifndef OMIT_WHAT_I_DO
   if (verbosity&VER_INPUT)
@@ -226,25 +148,6 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&length,exclude,&comp,column,
 				      dimset,verbosity);
 
-  for (i=0;i<comp;i++) {
-    rescale_data(series[i],length,&min,&ind_inter);
-    variance(series[i],length,&av,&ind_var);
-    if (i == 0) {
-      varianz=ind_var;
-      inter=ind_inter;
-    }
-    else {
-      varianz=(varianz>ind_var)?ind_var:varianz;
-      inter=(inter<ind_inter)?ind_inter:inter;
-    }
-  }
-
-  check_alloc(list=(long*)malloc(sizeof(long)*length));
-  check_alloc(nearest=(char*)malloc(length));
-  check_alloc(box=(long**)malloc(sizeof(long*)*BOX));
-  for (i=0;i<BOX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*BOX));
-
   if (!stdo) {
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
@@ -254,75 +157,59 @@ int main(int argc,char **argv)
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
   }
-  check_alloc(vcomp=(unsigned int*)malloc(sizeof(int)*(maxdim)));
-  check_alloc(vemb=(unsigned int*)malloc(sizeof(int)*(maxdim)));
-  for (i=0;i<maxdim;i++) {
-    if (comp == 1) {
-      vcomp[i]=0;
-      vemb[i]=i;
+
+  result=false_nearest_compute((double *const *)series,length,comp,delay,
+				minemb,maxemb,theiler,rt,eps0,&error);
+  if (result == NULL) {
+    if (error == FALSE_NEAREST_ERR_ZERO_INTERVAL) {
+      /* Reproduce rescale_data()'s exact message for whichever component
+	 first has zero range. false_nearest_compute() rescales a private
+	 copy and doesn't report which component failed, but it never
+	 touches our own copy of series, so redo the same scan here. */
+      for (c=0;c<comp;c++) {
+	cmin=cinterval=series[c][0];
+	for (k=1;k<length;k++) {
+	  if (series[c][k] < cmin) cmin=series[c][k];
+	  if (series[c][k] > cinterval) cinterval=series[c][k];
+	}
+	cinterval -= cmin;
+	if (cinterval == 0.0) break;
+      }
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",cmin,cmin+cinterval);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    else if (error == FALSE_NEAREST_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
     }
     else {
-      vcomp[i]=i%comp;
-      vemb[i]=(i/comp)*delay;
-    }
-  }
-  for (emb=minemb;emb<=maxemb;emb++) {
-    dim=emb*comp-1;
-    epsilon=eps0;
-    toolarge=0;
-    alldone=0;
-    donesofar=0;
-    aveps=0.0;
-    vareps=0.0;
-    for (i=0;i<length;i++)
-      nearest[i]=0;
-    if (verbosity&VER_USR1)
-      fprintf(stderr,"Start for dimension=%u\n",dim+1);
-    while (!alldone && (epsilon < 2.*varianz/rt)) {
-      alldone=1;
-      mmb(vcomp[dim],vemb[dim],epsilon);
-      for (i=0;i<length-maxemb*delay;i++)
-	if (!nearest[i]) {
-	  nearest[i]=find_nearest(i,dim,epsilon);
-	  alldone &= nearest[i];
-	  donesofar += (unsigned long)nearest[i];
-	}
-      if (verbosity&VER_USR1)
-	fprintf(stderr,"Found %lu up to epsilon=%e\n",donesofar,epsilon*inter);
-      epsilon*=sqrt(2.0);
-      if (!donesofar)
-	eps0=epsilon;
-    }
-    if (donesofar == 0) {
       fprintf(stderr,"Not enough points found!\n");
       exit(FALSE_NEAREST_NOT_ENOUGH_POINTS);
     }
-    aveps *= (1./(double)donesofar);
-    vareps *= (1./(double)donesofar);
+  }
+
+  for (i=0;i<result->n;i++) {
     if (stdo) {
-      fprintf(stdout,"%u %e %e %e\n",dim+1,(double)toolarge/(double)donesofar,
-	      aveps*inter,sqrt(vareps)*inter);
+      fprintf(stdout,"%u %e %e %e\n",result->dimension[i],result->fraction[i],
+	      result->avg_eps[i],result->sigma_eps[i]);
       fflush(stdout);
     }
     else {
-      fprintf(file,"%u %e %e %e\n",dim+1,(double)toolarge/(double)donesofar,
-	      aveps*inter,sqrt(vareps)*inter);
+      fprintf(file,"%u %e %e %e\n",result->dimension[i],result->fraction[i],
+	      result->avg_eps[i],result->sigma_eps[i]);
       fflush(file);
     }
   }
   if (!stdo)
     fclose(file);
 
+  false_nearest_free(result);
   if (infile != NULL)
     free(infile);
   if (outfile != NULL)
     free(outfile);
   free(series);
-  free(list);
-  free(nearest);
-  for (i=0;i<BOX;i++)
-    free(box[i]);
-  free(box);
 
   return 0;
 }

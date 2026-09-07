@@ -25,6 +25,7 @@
 #include <limits.h>
 #include <time.h>
 #include "routines/tsa.h"
+#include "../include/polynomp.h"
 
 #define WID_STR "Fits a polynomial to the data."
 
@@ -89,116 +90,17 @@ void scan_options(int n,char **in)
     stdo=0;
     if (strlen(out) > 0)
       outfile=out;
-  } 
-}
-
-double polynom(unsigned long act,unsigned int which)
-{
-  unsigned int i,j;
-  double ret=1.0,h;
-  
-  for (i=0;i<dim;i++) {
-    h=series[act-i*delay];
-    for (j=0;j<order[which][i];j++)
-      ret *= h;
-  }
-  
-  return ret;
-}
-
-void make_fit(void)
-{
-  double **mat,*vec;
-  double h;
-  unsigned long n,hn;
-  unsigned int i,j;
-
-  check_alloc(vec=(double*)malloc(sizeof(double)*plength));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*plength));
-  for (i=0;i<plength;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*plength));
-
-  for (i=0;i<plength;i++) {
-    vec[i]=0.0;
-    for (j=0;j<plength;j++)
-      mat[i][j]=0.0;
-  }
-  
-  for (n=(dim-1)*delay;n<insample-1;n++) {
-    hn=n+1;
-    for (i=0;i<plength;i++) {
-      vec[i] += series[hn]*(h=polynom(n,i));
-      for (j=i;j<plength;j++)
-	mat[i][j] += polynom(n,j)*h;
-    }
-  }
-  for (i=0;i<plength;i++) {
-    vec[i] /= (insample-(dim-1)*delay-1);
-    for (j=i;j<plength;j++)
-      mat[j][i]=(mat[i][j]/=(insample-(dim-1)*delay)-1);
-  }
-  
-  solvele(mat,vec,plength);
-
-  for (i=0;i<plength;i++)
-    param[i]=vec[i];
-
-  free(vec);
-  for (i=0;i<plength;i++)
-    free(mat[i]);
-  free(mat);
-}
-
-double forecast_error(unsigned long i0,unsigned long i1)
-{
-  unsigned int i;
-  unsigned long n;
-  double h,error=0.0;
-
-  for (n=i0+(dim-1)*delay;n<i1-1;n++) {
-    h=0.0;
-    for (i=0;i<plength;i++)
-      h += param[i]*polynom(n,i);
-    error += (series[n+1]-h)*(series[n+1]-h);
-  }
-
-  return sqrt(error/(i1-i0-(dim-1)*delay-1));
-}
-
-void make_cast(FILE *fcast)
-{
-  int i,j,hi;
-  unsigned int k;
-  double casted;
-  
-  for (i=0;i<=(dim-1)*delay;i++)
-    series[i]=series[length-(dim-1)*delay+i-1];
-
-  hi=(dim-1)*delay;
-  for (i=1;i<=step;i++) {
-    casted=0.0;
-    for (k=0;k<plength;k++)
-      casted += param[k]*polynom((unsigned long)((dim-1)*delay),k);
-    if (!stdo) {
-      fprintf(fcast,"%e\n",casted);
-      fflush(fcast);
-    }
-    else {
-      fprintf(stdout,"%e\n",casted);
-      fflush(stdout);
-    }
-    for (j=0;j<(dim-1)*delay;j++)
-      series[j]=series[j+1];
-    series[hi]=casted;
   }
 }
 
 int main(int argc,char **argv)
 {
   int i,j;
-  char stdi=0,oose=1;
-  double **dummy,withalli,withallo;
-  double av,varianz;
+  char stdi=0;
+  double **dummy;
+  unsigned int *order_flat;
+  PolynompResult *result;
+  PolynompError error;
   FILE *file;
 
   if (scan_help(argc,argv))
@@ -213,7 +115,7 @@ int main(int argc,char **argv)
   infile=search_datafile(argc,argv,&column,verbosity);
   if (infile == NULL)
     stdi=1;
-  
+
   if (outfile == NULL) {
     if (!stdi) {
       check_alloc(outfile=(char*)calloc(strlen(infile)+5,(size_t)1));
@@ -240,7 +142,7 @@ int main(int argc,char **argv)
 
   dummy=(double**)get_multi_series(parin,&plength,0LU,
 				   &dim,"",(char)"1",verbosity);
-  
+
   check_alloc(order=(unsigned int**)malloc(sizeof(int*)*plength));
   for (i=0;i<plength;i++) {
     check_alloc(order[i]=(unsigned int*)malloc(sizeof(int)*dim));
@@ -249,25 +151,31 @@ int main(int argc,char **argv)
   }
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  variance(series,length,&av,&varianz);
 
-  if (insample >= length) {
-    insample=length;
-    oose=0;
+  check_alloc(order_flat=(unsigned int*)malloc(sizeof(unsigned int)*plength*dim));
+  for (i=0;i<plength;i++)
+    for (j=0;j<dim;j++)
+      order_flat[i*dim+j]=order[i][j];
+
+  result=polynomp_fit(series,length,order_flat,(unsigned int)plength,dim,delay,
+		       insample,step,&error);
+  free(order_flat);
+  if (result == NULL) {
+    if (error == POLYNOMP_ERR_ZERO_VARIANCE) {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    }
+    else {
+      fprintf(stderr,"Singular matrix! Exiting!\n");
+      exit(SOLVELE_SINGULAR_MATRIX);
+    }
   }
-
-  check_alloc(param=(double*)malloc(sizeof(double)*plength));
-
-  make_fit();
-  withalli=forecast_error(0LU,insample);
-  withallo=0.0;
-  if (oose)
-    withallo=forecast_error(insample+1,length);
+  param=result->param;
 
   if (stdo) {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
-    fprintf(stdout,"#FCE: %e %e\n",withalli/varianz,withallo/varianz);
+    fprintf(stdout,"#FCE: %e %e\n",result->fce_insample,result->fce_outsample);
     for (i=0;i<plength;i++) {
       fprintf(stdout,"# ");
       for (j=0;j<dim;j++)
@@ -280,7 +188,7 @@ int main(int argc,char **argv)
     file=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Opened %s for writing\n",outfile);
-    fprintf(file,"#FCE: %e %e\n",withalli/varianz,withallo/varianz);
+    fprintf(file,"#FCE: %e %e\n",result->fce_insample,result->fce_outsample);
     for (i=0;i<plength;i++) {
       fprintf(file,"# ");
       for (j=0;j<dim;j++)
@@ -289,11 +197,22 @@ int main(int argc,char **argv)
     }
     fflush(file);
   }
-  
-  make_cast(file);
+
+  for (i=0;i<step;i++) {
+    if (!stdo) {
+      fprintf(file,"%e\n",result->forecast[i]);
+      fflush(file);
+    }
+    else {
+      fprintf(stdout,"%e\n",result->forecast[i]);
+      fflush(stdout);
+    }
+  }
 
   if (!stdo)
     fclose(file);
+
+  polynomp_free(result);
 
   return 0;
 }

@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <math.h>
 #include "routines/tsa.h"
+#include "../include/resample.h"
 
 #define WID_STR "Resample the data"
 
@@ -83,10 +84,8 @@ void scan_options(int argc,char **argv)
 int main(int argc,char **argv)
 {
   char stdi=0;
-  long i,j,itime,itime_old;
-  int horder,horder2;
-  double **mat,*vec,**imat,*coef;
-  double time,htime,new_el;
+  unsigned long i;
+  ResampleResult *result;
   FILE *file=NULL;
 
   if (scan_help(argc,argv))
@@ -117,21 +116,18 @@ int main(int argc,char **argv)
     test_outfile(outfile);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
-  
-  horder=order+1;
-  horder2=(horder+1)/2-horder;
 
-  check_alloc(mat=(double**)malloc(sizeof(double*)*horder));
-  for (i=0;i<horder;i++)
-    check_alloc(mat[i]=(double*)malloc(sizeof(double)*horder));
-  check_alloc(vec=(double*)malloc(sizeof(double)*horder));
-  check_alloc(coef=(double*)malloc(sizeof(double)*horder));
-  
-  for (i=0;i<horder;i++)
-    for (j=0;j<horder;j++)
-      mat[i][j]=pow((double)(horder2+i),(double)j);
+  if (length < (unsigned long)((order+1)/2)) {
+    fprintf(stderr,"resample: series too short for order %u"
+	    " (need at least %u points). Exiting!\n",order,(order+1)/2);
+    exit(SOLVELE_SINGULAR_MATRIX);
+  }
 
-  imat=invert_matrix(mat,(unsigned int)horder);
+  result=resample_compute(series,length,sampletime,order);
+  if (result == NULL) {
+    fprintf(stderr,"Singular matrix! Exiting!\n");
+    exit(SOLVELE_SINGULAR_MATRIX);
+  }
 
   if (!stdo) {
     file=fopen(outfile,"w");
@@ -143,32 +139,16 @@ int main(int argc,char **argv)
       fprintf(stderr,"Writing to stdout\n");
   }
 
-  time=(horder+1)/2.;
-  itime_old= -1;
-  while (time < (double)(length-horder/2)) {
-    itime=(int)time+horder2;
-    if (itime != itime_old) {
-      for (i=0;i<horder;i++)
-	vec[i]=series[i+itime];
-      for (i=0;i<horder;i++) {
-	coef[i]=0.0;
-	for (j=0;j<horder;j++)
-	  coef[i] += imat[i][j]*vec[j];
-      }
-    }
-    itime_old=itime;
-    htime=time-itime+horder2;
-    new_el=coef[0];
-    for (i=1;i<horder;i++)
-      new_el += coef[i]*pow(htime,(double)i);
+  for (i=0;i<result->length;i++) {
     if (stdo)
-      fprintf(stdout,"%e\n",new_el);
+      fprintf(stdout,"%e\n",result->data[i]);
     else
-      fprintf(file,"%e\n",new_el);
-    time += sampletime;
+      fprintf(file,"%e\n",result->data[i]);
   }
   if (!stdo)
     fclose(file);
+
+  resample_free(result);
 
   return 0;
 }

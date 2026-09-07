@@ -24,6 +24,7 @@
 #include <math.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/pca.h"
 
 #define WID_STR "Performs a global PCA"
 
@@ -108,57 +109,19 @@ void scan_options(int n,char **in)
   }
 }
 
-void ordne(double *lyap,int *ord)
-{
-  long i,j,maxi;
-  double max;
-  
-  for (i=0;i<dimemb;i++)
-    ord[i]=i;
-
-  for (i=0;i<dimemb-1;i++)
-    for (j=i+1;j<dimemb;j++)
-      if (lyap[i] < lyap[j]) {
-	max=lyap[i];
-	lyap[i]=lyap[j];
-	lyap[j]=max;
-	maxi=ord[i];
-	ord[i]=ord[j];
-	ord[j]=maxi;
-      }
-}
-
 void make_pca(double *av)
 {
-  unsigned int i,j,k,i1,i2,j1,j2,k1,k2;
-  int *ord;
-  double **mat,*matarray,*eig,*sp,hsp=0.0;
+  unsigned int i,j,k,k1,k2;
+  double *sp,hsp=0.0;
   FILE *fout=NULL;
+  PCA *pca;
 
-  check_alloc(ord=(int*)malloc(sizeof(int)*dimemb));
-  check_alloc(eig=(double*)malloc(sizeof(double)*dimemb));
-  check_alloc(matarray=(double*)malloc(sizeof(double)*dimemb*dimemb));
-  check_alloc(mat=(double**)malloc(sizeof(double*)*dimemb));
-  for (i=0;i<dimemb;i++)
-    mat[i]=(double*)(matarray+i*dimemb);
-
-  
-  for (i=0;i<dimemb;i++) {
-    i1=i/EMB;
-    i2=(i%EMB)*DELAY;
-    for (j=i;j<dimemb;j++) {
-      j1=j/EMB;
-      j2=(j%EMB)*DELAY;
-      mat[i][j]=0.0;
-      for (k=(EMB-1)*DELAY;k<LENGTH;k++)
-	mat[i][j] += series[i1][k-i2]*series[j1][k-j2];
-      mat[j][i]=(mat[i][j] /= (double)(LENGTH-(EMB-1)*DELAY));
-    }
+  pca=pca_compute((double *const *)series,LENGTH,DIM,EMB,DELAY);
+  if (pca == NULL) {
+    fprintf(stderr,"Non converging eigenvalues! Exiting\n");
+    exit(EIG2_TOO_MANY_ITERATIONS);
   }
 
-  eigen(mat,(unsigned long)dimemb,eig);
-  ordne(eig,ord);
-  
   if (!stout) {
     fout=fopen(outfile,"w");
     if (verbosity&VER_INPUT)
@@ -172,26 +135,25 @@ void make_pca(double *av)
   for (i=0;i<dimemb;i++)
     if (write_values) {
       if (stout)
-	fprintf(stdout,"%d %e\n",i,eig[i]);
+	fprintf(stdout,"%d %e\n",i,pca->eigenvalues[i]);
       else
-	fprintf(fout,"%d %e\n",i,eig[i]);
+	fprintf(fout,"%d %e\n",i,pca->eigenvalues[i]);
     }
     else {
       if (verbosity) {
 	if (stout)
-	  fprintf(stdout,"#%d %e\n",i,eig[i]);
+	  fprintf(stdout,"#%d %e\n",i,pca->eigenvalues[i]);
 	else
-	  fprintf(fout,"#%d %e\n",i,eig[i]);
+	  fprintf(fout,"#%d %e\n",i,pca->eigenvalues[i]);
       }
     }
   if (write_vectors) {
     for (i=0;i<dimemb;i++) {
       for (j=0;j<dimemb;j++) {
-	j1=ord[j];
 	if (stout)
-	  fprintf(stdout,"%e ",mat[i][j1]);
+	  fprintf(stdout,"%e ",pca->eigenvectors[i][j]);
 	else
-	  fprintf(fout,"%e ",mat[i][j1]);
+	  fprintf(fout,"%e ",pca->eigenvectors[i][j]);
       }
       if (stout)
 	fprintf(stdout,"\n");
@@ -203,12 +165,11 @@ void make_pca(double *av)
   if (write_comp) {
     for (i=(EMB-1)*DELAY;i<LENGTH;i++) {
       for (j=0;j<LDIM;j++) {
-	j1=ord[j];
 	hsp=0.0;
 	for (k=0;k<dimemb;k++) {
 	  k1=k/EMB;
 	  k2=(k%EMB)*DELAY;
-	  hsp += mat[k][j1]*(series[k1][i-k2]+av[k1]);
+	  hsp += pca->eigenvectors[k][j]*(series[k1][i-k2]+av[k1]);
 	}
 	if (stout)
 	  fprintf(stdout,"%e ",hsp);
@@ -237,20 +198,17 @@ void make_pca(double *av)
     }
     for (i=(EMB-1)*DELAY;i<LENGTH;i++) {
       for (j=0;j<LDIM;j++) {
-	j1=ord[j];
 	sp[j]=0.0;
 	for (k=0;k<dimemb;k++) {
 	  k1=k/EMB;
 	  k2=(k%EMB)*DELAY;
-	  sp[j] += mat[k][j1]*series[k1][i-k2];
+	  sp[j] += pca->eigenvectors[k][j]*series[k1][i-k2];
 	}
       }
       for (j=0;j<DIM;j++) {
 	hsp=0.0;
-	for (k=0;k<LDIM;k++) {
-	  k1=ord[k];
-	  hsp += mat[j*EMB][k1]*sp[k];
-	}
+	for (k=0;k<LDIM;k++)
+	  hsp += pca->eigenvectors[j*EMB][k]*sp[k];
 	if (stout)
 	  fprintf(stdout,"%e ",hsp+av[j]);
 	else
@@ -266,6 +224,8 @@ void make_pca(double *av)
 
   if (!stout)
     fclose(fout);
+
+  pca_free(pca);
 }
 
 int main(int argc,char **argv)

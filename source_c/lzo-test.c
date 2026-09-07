@@ -23,6 +23,7 @@
 #include <string.h>
 #include <limits.h>
 #include "routines/tsa.h"
+#include "../include/lzo-test.h"
 
 #define WID_STR "Estimates the average forecast error for a zeroth\n\t\
 order fit from a multidimensional time series"
@@ -32,14 +33,7 @@ order fit from a multidimensional time series"
 #include <math.h>
 #endif
 
-/*number of boxes for the neighbor search algorithm*/
-#define NMAX 512
-
-unsigned int nmax=(NMAX-1);
-long **box,*list;
-unsigned long *found;
-double **series,**diffs;
-double interval,min,epsilon;
+double **series;
 
 char epsset=0,dimset=0,clengthset=0,causalset=0;
 char *infile=NULL;
@@ -134,37 +128,19 @@ void scan_options(int n,char **in)
   }
 }
 
-void make_fit(long act,unsigned long number,long istep,double **error)
-{
-  double casted,*help;
-  long i,j,h;
-  
-  h=istep-1;
-  for (j=0;j<dim;j++) {
-    casted=0.0;
-    help=series[j]+istep;
-    for (i=0;i<number;i++)
-      casted += help[found[i]];
-    casted /= number;
-    diffs[j][act]=casted-help[act];
-    error[j][h] += sqr(casted-help[act]);
-  }
-}
-
 int main(int argc,char **argv)
 {
   char stdi=0;
-  char alldone,*done;
-  long i,j,hi;
-  unsigned long *hfound;
-  unsigned long actfound;
-  unsigned long clength;
-  double *rms,*av,**error,**hser,*hinter;
+  unsigned long i,j,k;
+  unsigned int c;
+  double cmin,cinterval;
+  LzoTest *result;
+  LzoTestError error;
   FILE *file;
 
   if (scan_help(argc,argv))
     show_options(argv[0]);
-  
+
   scan_options(argc,argv);
 
   if ((2*STEP+causal) >= ((long)LENGTH-(long)(embed*DELAY)-(long)MINN)) {
@@ -195,7 +171,7 @@ int main(int argc,char **argv)
   }
   if (!stdo)
     test_outfile(outfile);
-  
+
   if (COLUMNS == NULL)
     series=(double**)get_multi_series(infile,&LENGTH,exclude,&dim,"",dimset,
 				      verbosity);
@@ -203,73 +179,34 @@ int main(int argc,char **argv)
     series=(double**)get_multi_series(infile,&LENGTH,exclude,&dim,COLUMNS,
 				      dimset,verbosity);
 
-  check_alloc(hser=(double**)malloc(sizeof(double*)*dim));
-  check_alloc(av=(double*)malloc(sizeof(double)*dim));
-  check_alloc(rms=(double*)malloc(sizeof(double)*dim));
-  check_alloc(hinter=(double*)malloc(sizeof(double)*dim));
-  interval=0.0;
-  for (i=0;i<dim;i++) {
-    rescale_data(series[i],LENGTH,&min,&hinter[i]);
-    variance(series[i],LENGTH,&av[i],&rms[i]);
-    interval += hinter[i];
-  }
-  interval /= (double)dim;
-
-  check_alloc(list=(long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(found=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(hfound=(unsigned long*)malloc(sizeof(long)*LENGTH));
-  check_alloc(done=(char*)malloc(sizeof(char)*LENGTH));
-  check_alloc(box=(long**)malloc(sizeof(long*)*NMAX));
-  check_alloc(error=(double**)malloc(sizeof(double*)*dim));
-  check_alloc(diffs=(double**)malloc(sizeof(double*)*dim));
-  for (j=0;j<dim;j++) {
-    check_alloc(diffs[j]=(double*)malloc(sizeof(double)*LENGTH));
-    check_alloc(error[j]=(double*)malloc(sizeof(double)*STEP));
-    for (i=0;i<STEP;i++)
-      error[j][i]=0.0;
-  }
-  
-  for (i=0;i<NMAX;i++)
-    check_alloc(box[i]=(long*)malloc(sizeof(long)*NMAX));
-    
-  for (i=0;i<LENGTH;i++)
-    done[i]=0;
-
-  alldone=0;
-  if (epsset)
-    EPS0 /= interval;
-
-  epsilon=EPS0/EPSF;
-
-  if (!clengthset)
-    CLENGTH=LENGTH;
-  clength=((CLENGTH*refstep+STEP) <= LENGTH) ? CLENGTH : 
-    (LENGTH-(long)STEP)/refstep;
-
-  while (!alldone) {
-    alldone=1;
-    epsilon*=EPSF;
-    make_multi_box(series,box,list,LENGTH-(long)STEP,NMAX,(unsigned int)dim,
-		   (unsigned int)embed,(unsigned int)DELAY,epsilon);
-    for (i=(embed-1)*DELAY;i<clength;i++)
-      if (!done[i]) {
-	hi=i*refstep;
-	for (j=0;j<dim;j++)
-	  hser[j]=series[j]+hi;
-	actfound=find_multi_neighbors(series,box,list,hser,LENGTH,NMAX,
-				       (unsigned int)dim,(unsigned int)embed,
-				       (unsigned int)DELAY,epsilon,hfound);
-	actfound=exclude_interval(actfound,hi-(long)causal+1,
-				  hi+causal+(embed-1)*DELAY-1,hfound,found);	
-	if (actfound >= MINN) {
-	  for (j=1;j<=STEP;j++) {
-	    make_fit(hi,actfound,j,error);
-	  }
-	  done[i]=1;
+  result=lzo_test_compute((double *const *)series,LENGTH,dim,embed,DELAY,MINN,
+			   STEP,refstep,causal,CLENGTH,clengthset,EPS0,epsset,
+			   EPSF,&error);
+  if (result == NULL) {
+    if (error == LZO_TEST_ERR_ZERO_INTERVAL) {
+      /* Reproduce rescale_data()'s exact message for whichever component
+	 first has zero range. lzo_test_compute() rescales a private copy
+	 and doesn't report which component failed, but it never touches
+	 our own copy of series, so redo the same scan here. */
+      for (c=0;c<dim;c++) {
+	cmin=cinterval=series[c][0];
+	for (k=1;k<LENGTH;k++) {
+	  if (series[c][k] < cmin) cmin=series[c][k];
+	  if (series[c][k] > cinterval) cinterval=series[c][k];
 	}
-	alldone &= done[i];
+	cinterval -= cmin;
+	if (cinterval == 0.0) break;
       }
+      fprintf(stderr,"rescale_data: data ranges from %e to %e. It makes\n"
+	      "\t\tno sense to continue. Exiting!\n\n",cmin,cmin+cinterval);
+      exit(RESCALE_DATA_ZERO_INTERVAL);
+    }
+    else {
+      fprintf(stderr,"Variance of the data is zero. Exiting!\n\n");
+      exit(VARIANCE_VAR_EQ_ZERO);
+    }
   }
+
   if (stdo) {
     if (verbosity&VER_INPUT)
       fprintf(stderr,"Writing to stdout\n");
@@ -278,16 +215,14 @@ int main(int argc,char **argv)
 	fprintf(stdout,"# %lu ",i+1);
       else
 	fprintf(stdout,"%lu ",i+1);
-      for (j=0;j<dim;j++) 
-	fprintf(stdout,"%e ",
-		sqrt(error[j][i]/(clength-(embed-1)*DELAY))/rms[j]);
+      for (j=0;j<dim;j++)
+	fprintf(stdout,"%e ",result->error[i*dim+j]);
       fprintf(stdout,"\n");
     }
     if (verbosity&VER_USR1) {
-      for (i=(embed-1)*DELAY;i<clength;i++) {
-	hi=i*refstep;
+      for (i=0;i<result->n_ref;i++) {
 	for (j=0;j<dim;j++)
-	  fprintf(stdout,"%e ",diffs[j][hi]*hinter[j]);
+	  fprintf(stdout,"%e ",result->diffs[i*dim+j]);
 	fprintf(stdout,"\n");
       }
     }
@@ -301,45 +236,30 @@ int main(int argc,char **argv)
 	fprintf(file,"# %lu ",i+1);
       else
 	fprintf(file,"%lu ",i+1);
-      for (j=0;j<dim;j++) 
-	fprintf(file,"%e ",sqrt(error[j][i]/(clength-(embed-1)*DELAY))/rms[j]);
+      for (j=0;j<dim;j++)
+	fprintf(file,"%e ",result->error[i*dim+j]);
       fprintf(file,"\n");
     }
     if (verbosity&VER_USR1) {
-      for (i=(embed-1)*DELAY;i<clength;i++) {
-	hi=i*refstep;
+      for (i=0;i<result->n_ref;i++) {
 	for (j=0;j<dim;j++)
-	  fprintf(file,"%e ",diffs[j][hi]*hinter[j]);
+	  fprintf(file,"%e ",result->diffs[i*dim+j]);
 	fprintf(file,"\n");
       }
     }
     fclose(file);
   }
 
+  lzo_test_free(result);
   if (outfile != NULL)
     free(outfile);
   if (infile != NULL)
     free(infile);
   if (COLUMNS != NULL)
     free(COLUMNS);
-  for (i=0;i<dim;i++) {
+  for (i=0;i<dim;i++)
     free(series[i]);
-    free(diffs[i]);
-    free(error[i]);
-  }
   free(series);
-  free(diffs);
-  free(hser);
-  free(error);
-  free(av);
-  free(rms);
-  free(list);
-  free(found);
-  free(hfound);
-  free(done);
-  for (i=0;i<NMAX;i++)
-    free(box[i]);
-  free(box);
 
   return 0;
 }

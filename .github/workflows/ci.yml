@@ -1,0 +1,43 @@
+name: TISEAN CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential gfortran cmake python3 python3-pip
+
+      - name: Build TISEAN
+        run: |
+          cmake -S . -B build
+          cmake --build build
+
+      - name: Install Python deps
+        run: |
+          pip3 install numpy pytest
+          pip3 install ./python
+
+      - name: Verify Python bindings are importable
+        run: |
+          # tests/test_ar_model_bindings.py uses pytest.importorskip("tisean")
+          # so local runs can skip it without the bindings built - but that
+          # also means a broken/missing install here would silently skip
+          # those tests instead of failing the build. Check it directly so a
+          # broken package install fails CI instead of just vanishing from
+          # the test count.
+          python3 -c "import tisean"
+
+      - name: Run tests
+        run: |
+          pytest -q
