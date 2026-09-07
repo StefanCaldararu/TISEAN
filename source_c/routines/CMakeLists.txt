@@ -25,6 +25,7 @@ add_library(ddtsa STATIC
   normal.c
   store_spec.c
   nmore.c
+  dqk15.c
   tospec.c
   fft.c
   rank.c
