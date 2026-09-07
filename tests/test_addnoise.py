@@ -25,6 +25,23 @@ def run_makenoise(*args):
     return result.stdout
 
 
+def run_addnoise_generated(*args):
+    # -0 makes addnoise emit noise with no input file at all, so the
+    # distribution can be measured directly instead of by subtraction.
+    result = subprocess.run(
+        ["./bin/addnoise", *args, "-0"],
+        capture_output=True,
+        text=True,
+        check=True
+    )
+    return parse_output(result.stdout)
+
+
+def kurtosis(x):
+    # raw (non-excess) fourth standardized moment: 3.0 for Gaussian, 1.8 for uniform
+    return np.mean((x - x.mean()) ** 4) / x.std() ** 4
+
+
 def parse_output(text):
     data = []
     for line in text.splitlines():
@@ -97,3 +114,35 @@ def test_addnoise_agrees_with_makenoise():
     std_makenoise = noise_makenoise.std()
 
     assert abs(std_addnoise - std_makenoise) / std_addnoise < 0.1
+
+    # amplitude agreement alone doesn't distinguish Gaussian from uniform;
+    # compare the shape of the distribution too
+    kurt_addnoise = kurtosis(noise_addnoise)
+    kurt_makenoise = kurtosis(noise_makenoise)
+
+    assert abs(kurt_addnoise - kurt_makenoise) < 0.3
+
+
+def test_addnoise_gaussian_is_gaussian():
+    noise = run_addnoise_generated("-r0.05", "-l10000")
+
+    assert len(noise) == 10000
+    assert 2.6 < kurtosis(noise) < 3.4
+
+
+def test_addnoise_uniform_is_uniform():
+    noise = run_addnoise_generated("-r0.05", "-l10000", "-u")
+
+    assert len(noise) == 10000
+    assert kurtosis(noise) < 2.1
+
+
+def test_addnoise_uniform_is_one_sided():
+    eps = 0.05
+    noise = run_addnoise_generated("-r%g" % eps, "-l10000", "-u")
+
+    # addnoise -u is uniform on [0, eps], not [-eps/2, +eps/2] like makenoise
+    assert noise.min() >= -1e-6
+    assert noise.max() <= eps + 1e-6
+    assert abs(noise.mean() - eps / 2) < 0.1 * (eps / 2)
+    assert abs(noise.std() - eps / np.sqrt(12)) < 0.1 * (eps / np.sqrt(12))
