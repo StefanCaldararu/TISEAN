@@ -17,7 +17,6 @@
  */
 
 #include <math.h>
-#include <float.h>
 
 /* sqrt(a*a + b*b) without destructive overflow/underflow. */
 static float pythag_s(float a, float b)
@@ -379,7 +378,12 @@ static void tqlrat_s(int *n, float *d, float *e2, int *ierr)
     int N = *n;
     int i, j, l, m, ii, l1, mml;
     float b, c, f, g, h, p, r, s;
-    const float machep = FLT_EPSILON;
+    /* tqlrat.f took MACHEP from R1MACH(4), and TISEAN's r1mach.f is a
+     * hand-written stub returning the decimal literal 1.19E-07 (single
+     * precision 0x33ff8cf1), not FLT_EPSILON (0x34000000). The value sets
+     * the convergence threshold, so use the same one to get the same
+     * eigenvalues bit for bit. */
+    const float machep = 1.19E-07f;
 
 #define D(i) d[(i) - 1]
 #define E2(i) e2[(i) - 1]
